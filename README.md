@@ -2,6 +2,10 @@
 
 A web-based 3D modeler with Blender-style shortcuts and controls. Build 3D geometry in your browser and export it as `.glb` for use in Blender or other 3D tools.
 
+> ⚠️ **Important — after importing the exported model into Blender:** You **must** run
+> **Edit Mode → Mesh → Clean Up → Merge Vertices by Distance**, or the 3D model
+> imported from this program will not work.
+
 ---
 
 ## Requirements
@@ -198,11 +202,11 @@ Click **Import Ref Image** to load a `.png`/`.jpg` as a textured 4-point plane. 
 
 After exporting your `.glb` and importing it into Blender:
 
-### 1. Merge vertices by distance
+### 1. Merge Vertices by Distance (REQUIRED)
 ```
-Edit Mode → Mesh → Clean Up → Merge by Distance
+Edit Mode → Mesh → Clean Up → Merge Vertices by Distance
 ```
-> Required, or the model will not work properly.
+> ⚠️ **You must do this**, or the 3D model imported from this program will not work.
 
 ### 2. Triangles to quads
 ```
