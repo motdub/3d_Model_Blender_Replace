@@ -8,9 +8,24 @@ A web-based 3D modeler with Blender-style shortcuts and controls. Build 3D geome
 
 - **Node.js** (v16 or newer) — [Download Node.js](https://nodejs.org/)
 - **npm** (comes with Node.js)
-- A **Chrome-based browser** (Chrome, Edge, Brave, etc.)
+- Any **web browser** — the app opens in your **default web browser** (Vivaldi, Edge, Brave, Coc Coc, Chrome, Firefox, etc.). Nothing is hard-coded to Chrome.
 
 The only dependencies are **Three.js** and **Vite** (dev server), installed via npm.
+
+---
+
+## Installation
+
+1. **Download the project from GitHub.** On the repository page, click **Code → Download ZIP** (or `git clone https://github.com/motdub/3d_Model_Blender_Replace.git`).
+2. **Put the folder at exactly `C:\3d-model-creator`.** If you downloaded the ZIP, extract it so that the files (`index.html`, `main.js`, `launch.bat`, etc.) live directly inside `C:\3d-model-creator`.
+3. **Open PowerShell** and run exactly:
+
+   ```powershell
+   cd C:\3d-model-creator
+   .\launch.bat
+   ```
+
+That's it. `launch.bat` installs dependencies the first time, starts the dev server, and opens the app in your **default web browser** at **http://localhost:5173/**. Press **Ctrl+C** in the launcher window to stop the server.
 
 ---
 
@@ -24,7 +39,7 @@ The only dependencies are **Three.js** and **Vite** (dev server), installed via 
 `launch.bat` automatically:
 - installs dependencies the first time (`npm install`),
 - starts the Vite dev server,
-- opens the app at **http://localhost:5173/** in your Chrome-based browser.
+- opens the app at **http://localhost:5173/** in your **default web browser**.
 
 Press **Ctrl+C** in the launcher window to stop the server.
 

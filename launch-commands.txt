@@ -5,9 +5,14 @@
 HOW TO USE:
   1. Open PowerShell.
   2. Copy ONE of the blocks below and paste it into PowerShell.
-  3. Press Enter. The dev server starts and your Chrome-based
-     browser opens automatically at http://localhost:5173/
+  3. Press Enter. The dev server starts and your DEFAULT
+     web browser opens automatically at http://localhost:5173/
   4. To stop the server later, press Ctrl+C in the PowerShell window.
+
+ABOUT YOUR BROWSER:
+  - The page opens in whatever browser is set as your Windows
+    default (Vivaldi, Edge, Brave, Coc Coc, Chrome, Firefox, etc.).
+  - Nothing here is hard-coded to Chrome.
 
 IMPORTANT:
   - Edit the path on the "cd" line so it points to the folder
@@ -18,13 +23,13 @@ IMPORTANT:
  OPTION A - Full setup + launch (use this the first time)
 ------------------------------------------------------------
 
-cd "C:\3d-model-creator"; if (!(Test-Path node_modules)) { npm install }; Start-Job { Start-Sleep 4; Start-Process "http://localhost:5173/" } | Out-Null; npm run dev
+cd "C:\3d-model-creator"; if (!(Test-Path node_modules)) { npm install }; npm run dev -- --open
 
 ------------------------------------------------------------
- OPTION B - Force-open in Chrome specifically
+ OPTION B - Launch without auto-installing dependencies
 ------------------------------------------------------------
 
-cd "C:\3d-model-creator"; if (!(Test-Path node_modules)) { npm install }; Start-Job { Start-Sleep 4; Start-Process "chrome.exe" "http://localhost:5173/" } | Out-Null; npm run dev
+cd "C:\3d-model-creator"; Start-Job { Start-Sleep 4; Start-Process "http://localhost:5173/" } | Out-Null; npm run dev
 
 ------------------------------------------------------------
  OPTION C - Server already running? Just open the page
@@ -41,4 +46,5 @@ cd "C:\3d-model-creator"; .\launch.bat
 ============================================================
  TIP: You can also just double-click "launch.bat" in the
  project folder to do all of this without PowerShell.
+ Every option above opens your DEFAULT browser, not Chrome.
 ============================================================

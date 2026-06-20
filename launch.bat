@@ -4,7 +4,8 @@ REM  3D Model Creator - One-click launcher
 REM  Double-click this file to:
 REM    1. Install dependencies (first run only)
 REM    2. Start the Vite dev server
-REM    3. Open the app in your default Chrome-based browser
+REM    3. Open the app in your DEFAULT web browser (Vivaldi, Edge, Brave,
+REM       Coc Coc, Chrome, etc. - whatever you have set as default)
 REM ===========================================================================
 
 title 3D Model Creator
@@ -32,13 +33,12 @@ if not exist "node_modules" (
   echo.
 )
 
-REM --- Open the browser shortly after the server starts ---
-echo [LAUNCH] Opening http://localhost:5173/ in your browser...
-start "" /b cmd /c "timeout /t 4 /nobreak >nul & start chrome http://localhost:5173/ || start http://localhost:5173/"
-
-REM --- Start the dev server (this window stays open; press Ctrl+C to stop) ---
-echo [SERVER] Starting Vite dev server. Press Ctrl+C in this window to stop.
+REM --- Start the dev server AND open the page in the DEFAULT browser ---
+REM Vite's --open flag opens your default browser (Vivaldi, Edge, Brave,
+REM Coc Coc, Chrome, etc.) at the correct URL once the server is ready.
+echo [SERVER] Starting Vite dev server and opening your default browser...
+echo [INFO] Press Ctrl+C in this window to stop the server.
 echo.
-call npm run dev
+call npm run dev -- --open
 
 pause
