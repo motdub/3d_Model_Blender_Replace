@@ -137,7 +137,8 @@ All controls are **keyboard + mouse** (no GUI button required). A complete, alwa
 | **Scroll** | Zoom in / out |
 | **Shift + Right Click** | Place the 3D cursor (the camera's orbit pivot) on a surface or the ground |
 | **Shift + Left Click** (empty space) | Place the 3D cursor |
-| **Shift + Middle Drag** | Slide the 3D cursor along surfaces in real time |
+| **Shift + Middle Drag** (Perspective) | Slide the 3D cursor along surfaces in real time |
+| **Shift + Middle Drag** (Orthographic) | **Pan the flat 2D view** like an image — the 3D cursor rides along and re-centers as the orbit pivot, so you can immediately Middle-drag to rotate around it |
 | **Arrow Keys** | Fly forward / back / strafe |
 | **PageUp / PageDown** | Fly up / down |
 
@@ -173,6 +174,9 @@ A Blender-style **Navigation Compass / Axis Gizmo** lives in the **top-right cor
 - The **center button** (or key **5**) toggles **Perspective ⇄ Orthographic** at any time.
 
 > Note: this app is **Y-up** (Blender is Z-up), so the **Y** circle gives the top-down view and **Z** gives the front view.
+
+#### Pan the 2D view (Orthographic)
+While in **Orthographic** mode, **Shift + Middle-drag** pans the viewport flat, exactly like dragging a 2D image around. As you pan, the **3D cursor travels with the camera and stays pinned at the center of your view** — sitting on the correct depth along the axis you are looking down (right "under" you). Because the cursor is also the orbit pivot, you can then **Middle-drag (no Shift) to rotate** around that freshly re-centered point. In **Perspective** mode the same Shift + Middle-drag instead slides the 3D cursor along surfaces (unchanged).
 
 ### Wireframe display mode
 

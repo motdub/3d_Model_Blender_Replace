@@ -40,6 +40,7 @@ let cursor3DPos = new THREE.Vector3(0, 0, 0);
 
 // Navigation
 let isOrbiting = false, isPanning = false;
+let isOrthoPanning = false; // Shift+Middle drag in orthographic = pan the 2D view
 let moveCursorDuringDrag = false;
 let prevMouse = new THREE.Vector2();
 let orbitTheta = Math.PI / 3, orbitPhi = Math.PI / 4;
@@ -620,11 +621,24 @@ function onMouseDown(e) {
 
   if (e.button === 1) { // Middle
     if (e.shiftKey) {
-      // Shift+Middle-drag: move 3D cursor to follow mouse on ground plane
-      isPanning = false;
-      isOrbiting = false;
-      moveCursorDuringDrag = true;
-      prevMouse.copy(mouseScreen);
+      if (projectionMode === 'orthographic') {
+        // Orthographic: Shift+Middle-drag pans the flat 2D view. The 3D cursor
+        // rides along with the camera, staying pinned at the center of the view
+        // (the orbit pivot) on the axis you are looking down — so you can then
+        // Middle-drag to rotate/orbit around that re-centered point.
+        isOrthoPanning = true;
+        isPanning = false;
+        isOrbiting = false;
+        moveCursorDuringDrag = false;
+        prevMouse.copy(mouseScreen);
+      } else {
+        // Perspective: Shift+Middle-drag slides the 3D cursor along surfaces.
+        isOrthoPanning = false;
+        isPanning = false;
+        isOrbiting = false;
+        moveCursorDuringDrag = true;
+        prevMouse.copy(mouseScreen);
+      }
     } else {
       isOrbiting = true;
       prevMouse.copy(mouseScreen);
@@ -641,6 +655,31 @@ function onMouseDown(e) {
 
 function onMouseMove(e) {
   updateMousePosition(e);
+
+  if (isOrthoPanning) {
+    // Pan the orthographic 2D view: convert the mouse pixel delta into world
+    // units via the ortho frustum size and the camera's right/up vectors, then
+    // shift the orbit pivot by that amount. updateCameraOrbit() moves the camera
+    // along with the pivot, so the scene slides like a flat 2D image.
+    const dx = e.clientX - prevMouse.x;
+    const dy = e.clientY - prevMouse.y;
+    const wppX = (orthoCamera.right - orthoCamera.left) / window.innerWidth;
+    const wppY = (orthoCamera.top - orthoCamera.bottom) / window.innerHeight;
+    const camRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+    const camUp = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+    const move = new THREE.Vector3()
+      .addScaledVector(camRight, -dx * wppX)
+      .addScaledVector(camUp, dy * wppY);
+    orbitTarget.add(move);
+    updateCameraOrbit();
+    // The 3D cursor rides along with the pan, staying pinned at the center of
+    // the view (the orbit pivot) on the axis you are looking down — so you can
+    // immediately Middle-drag to rotate around that re-centered point.
+    cursor3DPos.copy(orbitTarget);
+    if (cursor3D) cursor3D.position.copy(orbitTarget);
+    prevMouse.copy(mouseScreen);
+    return;
+  }
 
   if (isOrbiting || isPanning) {
     const dx = e.clientX - prevMouse.x;
@@ -676,7 +715,7 @@ function onMouseMove(e) {
 }
 
 function onMouseUp(e) {
-  if (e.button === 1) { isOrbiting = false; isPanning = false; moveCursorDuringDrag = false; }
+  if (e.button === 1) { isOrbiting = false; isPanning = false; isOrthoPanning = false; moveCursorDuringDrag = false; }
   if (e.button === 0 && activeTool === 'box') { finishBoxSelect(); }
   // Hide box overlay when not box-selecting
   if (e.button === 0 && activeTool !== 'box') {
