@@ -1300,11 +1300,15 @@ function doExtrude() {
     normal = camFwd.normalize();
   }
 
-  // Create new vertices offset along the extrusion direction
+  // Create new vertices offset along the extrusion direction.
+  // Small default offset (0.25) so the extrude pushes out only a little; the
+  // auto-grab below lets the user drag it further as needed.
+  const EXTRUDE_OFFSET = 0.25;
   const newVerts = {};
   ids.forEach(id => {
-    newVerts[id] = topo.addV(topo.getV(id).pos.clone().addScaledVector(normal, 1)).id;
+    newVerts[id] = topo.addV(topo.getV(id).pos.clone().addScaledVector(normal, EXTRUDE_OFFSET)).id;
   });
+
 
   // For edge extrusion: create a face connecting old edge to new edge
   if (selectedEdges.length > 0 && faces.length === 0) {
