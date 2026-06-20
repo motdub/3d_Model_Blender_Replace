@@ -4,7 +4,10 @@ import * as THREE from 'three';
 // GLOBAL STATE
 // ============================================================================
 let scene, camera, renderer, clock;
+let perspCamera, orthoCamera;
+let projectionMode = 'perspective'; // 'perspective' | 'orthographic'
 let raycaster = new THREE.Raycaster();
+
 let mouse = new THREE.Vector2();
 let mouseScreen = new THREE.Vector2();
 let keys = {};
@@ -329,8 +332,12 @@ function init() {
   scene.add(new THREE.GridHelper(20, 20, 0x446688, 0x223344));
   addGridLabels();
 
-  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+  const aspect = window.innerWidth / window.innerHeight;
+  perspCamera = new THREE.PerspectiveCamera(60, aspect, 0.1, 200);
+  orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, -200, 400);
+  camera = perspCamera;
   updateCameraOrbit();
+
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -355,7 +362,9 @@ function init() {
   setupEvents();
   setupRefSystem();
   setupContextMenu();
+  setupGizmo();
   document.getElementById('wireframe-btn')?.addEventListener('click', toggleWireframe);
+
   updateHUD();
   console.log('[INIT] Ready. V:', topo.verts.length, 'E:', topo.edges.length, 'F:', topo.faces.length);
 }
@@ -548,6 +557,10 @@ function onKey(e) {
   // Wireframe display toggle
   if (k === '4') { toggleWireframe(); e.preventDefault(); }
 
+  // Projection toggle (perspective <-> orthographic), Blender-style Numpad 5
+  if (k === '5') { toggleProjection(); e.preventDefault(); }
+
+
   // Transform
   if (k === 'g' && activeTool === 'idle') { startTransform('grab'); e.preventDefault(); }
   if (k === 'r' && activeTool === 'idle') { startTransform('rotate'); e.preventDefault(); }
@@ -679,10 +692,13 @@ function onWheel(e) {
 }
 
 function onResize() {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
+  const aspect = window.innerWidth / window.innerHeight;
+  perspCamera.aspect = aspect;
+  perspCamera.updateProjectionMatrix();
+  updateOrthoFrustum();
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
+
 
 // ============================================================================
 // CAMERA ORBIT
@@ -694,11 +710,144 @@ function updateCameraOrbit() {
     orbitTarget.z + orbitRadius * Math.sin(orbitTheta) * Math.sin(orbitPhi)
   );
   camera.lookAt(orbitTarget);
+  if (camera.isOrthographicCamera) updateOrthoFrustum();
+}
+
+// Size the orthographic frustum from the orbit radius so that "zoom" (scroll)
+// and window resizes behave like the perspective camera.
+function updateOrthoFrustum() {
+  const aspect = window.innerWidth / window.innerHeight;
+  const halfH = orbitRadius * 0.5;
+  const halfW = halfH * aspect;
+  orthoCamera.left = -halfW;
+  orthoCamera.right = halfW;
+  orthoCamera.top = halfH;
+  orthoCamera.bottom = -halfH;
+  orthoCamera.updateProjectionMatrix();
+}
+
+// ============================================================================
+// PROJECTION MODE (perspective <-> orthographic) + AXIS VIEW SNAPPING
+// ============================================================================
+function setProjectionMode(mode) {
+  if (mode === projectionMode) return;
+  projectionMode = mode;
+  camera = (mode === 'orthographic') ? orthoCamera : perspCamera;
+  // Keep the active camera in sync with the current viewport size + orbit.
+  if (camera.isPerspectiveCamera) {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+  }
+  updateCameraOrbit();
+  updateProjButton();
+}
+
+function toggleProjection() {
+  setProjectionMode(projectionMode === 'perspective' ? 'orthographic' : 'perspective');
+}
+
+function updateProjButton() {
+  const btn = document.getElementById('proj-toggle');
+  if (btn) btn.textContent = projectionMode === 'orthographic' ? 'Ortho' : 'Persp';
+}
+
+// Snap the camera to look straight down a world axis (flat 2D view) and switch
+// to orthographic. Clicking the same axis again flips to the opposite side.
+// This app is Y-up: X = side, Y = top, Z = front.
+let lastSnapAxis = null;
+let lastSnapSign = -1;
+function snapToAxisView(axis) {
+  let sign = 1;
+  if (lastSnapAxis === axis) sign = -lastSnapSign;
+  lastSnapAxis = axis;
+  lastSnapSign = sign;
+
+  const eps = 0.0001;
+  if (axis === 'y') {
+    // Top / bottom view (look straight down / up the vertical axis)
+    orbitTheta = sign > 0 ? eps : Math.PI - eps;
+    orbitPhi = -Math.PI / 2; // keep +Z pointing "down" on screen for a stable top view
+  } else if (axis === 'x') {
+    // Side view (camera on +/-X looking toward center)
+    orbitTheta = Math.PI / 2;
+    orbitPhi = sign > 0 ? 0 : Math.PI;
+  } else if (axis === 'z') {
+    // Front view (camera on +/-Z looking toward center)
+    orbitTheta = Math.PI / 2;
+    orbitPhi = sign > 0 ? Math.PI / 2 : -Math.PI / 2;
+  }
+  setProjectionMode('orthographic');
+  updateCameraOrbit();
+}
+
+// ============================================================================
+// NAVIGATION GIZMO (Blender-style axis compass, top-right corner)
+// Clicking a colored axis ball snaps to a flat orthographic view down that axis.
+// ============================================================================
+const GIZMO_AXES = [
+  { axis: 'x', dir: new THREE.Vector3(1, 0, 0), sign: 1, color: '#ff5555', label: 'X' },
+  { axis: 'x', dir: new THREE.Vector3(-1, 0, 0), sign: -1, color: '#ff5555', label: '' },
+  { axis: 'y', dir: new THREE.Vector3(0, 1, 0), sign: 1, color: '#55dd55', label: 'Y' },
+  { axis: 'y', dir: new THREE.Vector3(0, -1, 0), sign: -1, color: '#55dd55', label: '' },
+  { axis: 'z', dir: new THREE.Vector3(0, 0, 1), sign: 1, color: '#5588ff', label: 'Z' },
+  { axis: 'z', dir: new THREE.Vector3(0, 0, -1), sign: -1, color: '#5588ff', label: '' },
+];
+let gizmoBalls = [];
+
+function setupGizmo() {
+  const gizmo = document.getElementById('nav-gizmo');
+  if (!gizmo) return;
+  const R = 32;      // radius the axis balls swing around
+  const cx = 44, cy = 44; // gizmo center (88px box)
+
+  gizmoBalls = GIZMO_AXES.map((a, i) => {
+    const el = document.createElement('div');
+    el.className = 'gz-ball' + (a.sign > 0 ? ' gz-ball-pos' : ' gz-ball-neg');
+    el.textContent = a.label;
+    if (a.sign > 0) el.style.background = a.color;
+    else { el.style.borderColor = a.color; }
+    el.addEventListener('click', (ev) => { ev.stopPropagation(); snapToAxisView(a.axis); });
+    gizmo.appendChild(el);
+    return { ...a, el };
+  });
+
+  // Center toggle: switch perspective <-> orthographic
+  const toggle = document.getElementById('proj-toggle');
+  if (toggle) {
+    toggle.addEventListener('click', (ev) => { ev.stopPropagation(); toggleProjection(); });
+  }
+  updateProjButton();
+
+  gizmo._R = R; gizmo._cx = cx; gizmo._cy = cy;
+}
+
+function updateGizmo() {
+  if (gizmoBalls.length === 0) return;
+  const gizmo = document.getElementById('nav-gizmo');
+  if (!gizmo) return;
+  const R = gizmo._R, cx = gizmo._cx, cy = gizmo._cy;
+  const invQ = camera.quaternion.clone().invert();
+  // Sort by view-space depth so nearer balls render on top.
+  const computed = gizmoBalls.map(b => {
+    const v = b.dir.clone().applyQuaternion(invQ); // view space (camera looks down -Z)
+    return { b, v };
+  });
+  computed.sort((p, q) => p.v.z - q.v.z); // smaller z (farther) first
+  computed.forEach(({ b, v }, order) => {
+    const x = cx + v.x * R;
+    const y = cy - v.y * R;
+    const front = v.z > -0.0001; // toward viewer
+    b.el.style.left = (x - 9) + 'px';
+    b.el.style.top = (y - 9) + 'px';
+    b.el.style.zIndex = String(10 + order);
+    b.el.style.opacity = front ? '1' : '0.45';
+  });
 }
 
 // ============================================================================
 // SELECTION
 // ============================================================================
+
 function getHovered() {
   raycaster.setFromCamera(mouse, camera);
 
@@ -1363,12 +1512,11 @@ function animate() {
   if (keys['pageup']) { camera.position.y += spd; orbitTarget.y += spd; updateCameraOrbit(); }
   if (keys['pagedown']) { camera.position.y -= spd; orbitTarget.y -= spd; updateCameraOrbit(); }
 
-  // Draw box select overlay
-  if (activeTool === 'box') {
-    // Could draw a 2D overlay; for now just re-render
-  }
+  // Update the navigation gizmo orientation to match the camera.
+  updateGizmo();
 
   renderer.render(scene, camera);
+
 }
 
 // ============================================================================

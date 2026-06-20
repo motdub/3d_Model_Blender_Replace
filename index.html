@@ -53,8 +53,14 @@
       </div>
     </div>
 
+    <!-- Navigation gizmo: Blender-style axis compass (top-right corner) -->
+    <div id="nav-gizmo" title="Click an axis ball to snap to a flat orthographic view (X=Side, Y=Top, Z=Front). Center button toggles Perspective/Orthographic.">
+      <button id="proj-toggle" title="Toggle Perspective / Orthographic (key: 5)">Persp</button>
+    </div>
+
     <!-- Controls reference: every keyboard shortcut / non-GUI control (top-right) -->
     <div id="controls-panel">
+
       <div class="cp-title">CONTROLS — KEYBOARD &amp; MOUSE</div>
       <div class="cp-note">Everything below is keyboard/mouse only (no GUI button).</div>
 
@@ -65,6 +71,14 @@
 
       <div class="cp-group">Display</div>
       <div class="cp-line"><b>4</b> Toggle Wireframe (points/lines/X, see-through)</div>
+      <div class="cp-line"><b>5</b> Toggle Perspective / Orthographic</div>
+
+      <div class="cp-group">View Gizmo (top-right compass)</div>
+      <div class="cp-line"><b>Click X</b> Side view (flat ortho)</div>
+      <div class="cp-line"><b>Click Y</b> Top view (flat ortho)</div>
+      <div class="cp-line"><b>Click Z</b> Front view (flat ortho)</div>
+      <div class="cp-line"><b>Click center</b> Toggle Persp / Ortho</div>
+
 
       <div class="cp-group">Select</div>
       <div class="cp-line"><b>Left Click</b> Select element</div>

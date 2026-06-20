@@ -29,7 +29,14 @@ That's it. `launch.bat` installs dependencies the first time, starts the dev ser
 
 ---
 
+## Closing the program
+
+When you want to **close/stop the program**, open **PowerShell** (or the **VS Code terminal**) — the window that is running the server — and press **Ctrl + C**. This stops the Vite dev server. You can then close the browser tab.
+
+---
+
 ## Quick Start
+
 
 ### Easiest — double-click `launch.bat`
 
@@ -71,11 +78,23 @@ All controls are **keyboard + mouse** (no GUI button required). A complete, alwa
 | **2** | Edge select mode |
 | **3** | Face select mode |
 
-### Display
+### Display & View
 
 | Key | Action |
 |-----|--------|
 | **4** | Toggle **Wireframe mode** (see below) |
+| **5** | Toggle **Perspective / Orthographic** projection |
+
+### Navigation Gizmo (top-right axis compass)
+
+| Control | Action |
+|---------|--------|
+| **Click X** (red) | Snap to **Side** view (flat orthographic) |
+| **Click Y** (green) | Snap to **Top** view (flat orthographic) |
+| **Click Z** (blue) | Snap to **Front** view (flat orthographic) |
+| **Click again** | Flip to the opposite side (+/−) of that axis |
+| **Click center** | Toggle **Perspective / Orthographic** |
+
 
 ### Select
 
@@ -146,7 +165,17 @@ Press **K** or right-click → **Knife Cut**. Click on edges to drop new vertice
 ### Flat (2D) movement
 Grab (**G**) and **Extrude** (**E**) now slide **flat along the ground plane** so your geometry tracks the reference image instead of drifting up and down. To move vertically on purpose, start a Grab and press **Z** (or **Y**) to lock to the vertical axis.
 
+### Navigation Gizmo & Orthographic views (copied from Blender)
+A Blender-style **Navigation Compass / Axis Gizmo** lives in the **top-right corner** of the viewport — an interactive widget with labeled colored circles (**X** = red, **Y** = green, **Z** = blue) that rotate to match your camera.
+
+- **Click a colored axis circle** to snap the camera to a perfectly flat, 2D projection looking straight down that axis: **X → Side**, **Y → Top**, **Z → Front**. Clicking the same circle again flips to the opposite side.
+- Snapping automatically switches the viewport from **Perspective** (which has depth distortion) to **Orthographic** mode. In Orthographic mode parallel lines never converge, so you can move, scale, or extrude vertices **completely flat on a 2D plane** without accidentally warping them along the depth axis.
+- The **center button** (or key **5**) toggles **Perspective ⇄ Orthographic** at any time.
+
+> Note: this app is **Y-up** (Blender is Z-up), so the **Y** circle gives the top-down view and **Z** gives the front view.
+
 ### Wireframe display mode
+
 Press **4** or click the **Wireframe** button (or right-click → **Toggle Wireframe**).
 - Solid faces become hidden/transparent so you can see the **reference image underneath**.
 - You still see all **points** and **lines (edges)**.

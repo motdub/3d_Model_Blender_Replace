@@ -206,11 +206,66 @@ body, html {
 #wireframe-btn:hover { background: #7d3c98; }
 #wireframe-btn.active { background: #d35400; }
 
-/* Controls reference panel (top-right) */
-#controls-panel {
+/* Navigation gizmo (Blender-style axis compass, top-right corner) */
+#nav-gizmo {
   position: absolute;
   top: 16px;
   right: 16px;
+  width: 88px;
+  height: 88px;
+  z-index: 20;
+  background: rgba(10, 10, 30, 0.55);
+  border-radius: 50%;
+  backdrop-filter: blur(6px);
+  user-select: none;
+}
+.gz-ball {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 800;
+  font-family: monospace;
+  color: #111;
+  cursor: pointer;
+  box-shadow: 0 0 3px rgba(0,0,0,0.6);
+  transition: transform 0.1s;
+}
+.gz-ball:hover { transform: scale(1.25); }
+.gz-ball-neg {
+  background: rgba(20, 20, 35, 0.9) !important;
+  border: 2px solid #888;
+  box-sizing: border-box;
+}
+#proj-toggle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 30;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  background: rgba(40, 40, 70, 0.9);
+  color: #e0e0e8;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 5px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+#proj-toggle:hover { background: rgba(60, 60, 100, 0.95); color: #fff; }
+
+/* Controls reference panel (top-right, below the gizmo) */
+#controls-panel {
+  position: absolute;
+  top: 116px;
+  right: 16px;
+
   z-index: 10;
   background: rgba(10, 10, 30, 0.85);
   color: #d8d8e0;
