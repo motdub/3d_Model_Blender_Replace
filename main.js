@@ -1159,16 +1159,16 @@ function startTransform(tool) {
 }
 
 function updateTransform() {
+  // Always project onto a plane that FACES the camera (perpendicular to the view
+  // direction) through the selection centroid. This makes the grabbed geometry
+  // track the mouse exactly 1:1 in every view — instead of "running ahead" of the
+  // cursor, which happened when projecting onto the foreshortened ground plane.
+  // In an orthographic axis view (Top/Front/Side) this camera-facing plane is the
+  // flat axis-aligned plane, so flat 2D editing is preserved. Axis locks below
+  // still constrain the resulting delta to a single world axis.
   const planeNormal = new THREE.Vector3();
-  if (activeTool === 'grab' && axisLock !== 'y') {
-    // Default grab slides along the flat horizontal (XZ) ground plane so geometry
-    // stays "flat 2D" against the reference image instead of drifting up/down.
-    // Use axis lock Y (or Z) to deliberately move vertically.
-    planeNormal.set(0, 1, 0);
-  } else {
-    camera.getWorldDirection(planeNormal);
-    planeNormal.negate();
-  }
+  camera.getWorldDirection(planeNormal);
+  planeNormal.negate();
   const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal, transformCentroid);
 
   const ndcToPlane = (nx, ny) => {
