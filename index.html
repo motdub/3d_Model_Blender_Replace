@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D Model Creator — Blender Style</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="canvas-container"></div>
+    <div id="box-select-overlay"></div>
+
+    <div id="hud">
+      <div class="hud-row">
+        <span class="hud-label">Mode:</span>
+        <span id="mode-indicator" class="badge badge-vertex">VERTEX</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Tool:</span>
+        <span id="tool-indicator" class="badge badge-idle">IDLE</span>
+        <span id="axis-indicator" class="badge badge-axis" style="display:none"></span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Selected:</span>
+        <span id="selected-indicator">None</span>
+      </div>
+      <div class="hud-help">
+        <p><b>1/2/3</b> Vert/Edge/Face | <b>A</b> Select All | <b>B</b> Box Select</p>
+        <p><b>G</b> Grab | <b>R</b> Rotate | <b>S</b> Scale | <b>X/Y/Z</b> Axis Lock</p>
+        <p><b>E</b> Extrude | <b>F</b> Fill | <b>M</b> Merge | <b>X</b> Delete</p>
+        <p><b>Shift+RClick</b> 3D Cursor | <b>Mid-Drag</b> Orbit | <b>Shift+Mid</b> Pan</p>
+        <p><b>Scroll</b> Zoom | <b>LClick</b> Select | <b>Esc</b> Cancel</p>
+      </div>
+      <button id="export-btn" title="Ctrl+E">Export .glb</button>
+      <button id="import-ref-btn" title="Import a reference image (.png, .jpg) as a 4-point plane">Import Ref Image</button>
+      <input type="file" id="ref-image-input" accept=".png,.jpg,.jpeg" style="display:none" />
+      <div class="hud-slider-row">
+        <span class="hud-label">Mesh:</span>
+        <input type="range" id="mesh-opacity-slider" min="0" max="100" value="85" />
+        <span id="mesh-opacity-val" class="slider-val">85%</span>
+      </div>
+      <div class="hud-slider-row">
+        <span class="hud-label">Img:</span>
+        <input type="range" id="image-opacity-slider" min="0" max="100" value="100" />
+        <span id="image-opacity-val" class="slider-val">100%</span>
+      </div>
+    </div>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,1363 @@
+import * as THREE from 'three';
+
+// ============================================================================
+// GLOBAL STATE
+// ============================================================================
+let scene, camera, renderer, clock;
+let raycaster = new THREE.Raycaster();
+let mouse = new THREE.Vector2();
+let mouseScreen = new THREE.Vector2();
+let keys = {};
+
+// Selection mode: 'vertex' | 'edge' | 'face'
+let selectMode = 'vertex';
+
+// Active tool: 'idle' | 'grab' | 'rotate' | 'scale' | 'box'
+let activeTool = 'idle';
+let axisLock = null; // null | 'x' | 'y' | 'z'
+
+// Selection state
+let selectedIds = new Set(); // vertex ids
+let hoveredId = null;
+
+// Reference images
+let referenceImages = []; // { imageId, plane, corners:[{pos, handle}], group, opacity }
+let hoveredRefCorner = null; // { imageId, cornerIndex }
+let selectedRefCorners = new Set(); // Set of "imageId:cornerIndex" strings
+let transformRefCorners = []; // [{imageId, cornerIndex, pos}, ...]
+
+// Transform state
+let transformStartPositions = [];
+let transformCentroid = new THREE.Vector3();
+let transformStartMouse = new THREE.Vector2();
+
+// 3D Cursor
+let cursor3D = null;
+let cursor3DPos = new THREE.Vector3(0, 0, 0);
+
+// Navigation
+let isOrbiting = false, isPanning = false;
+let moveCursorDuringDrag = false;
+let prevMouse = new THREE.Vector2();
+let orbitTheta = Math.PI / 3, orbitPhi = Math.PI / 4;
+let orbitRadius = 8;
+let orbitTarget = new THREE.Vector3(0, 0, 0);
+
+// Box select
+let boxSelectActive = false;
+let boxStart = new THREE.Vector2();
+let boxEnd = new THREE.Vector2();
+
+// Axis constraint line
+let axisLine = null;
+
+// Undo system
+let undoStack = [];
+
+function snapshotTopology() {
+  return {
+    verts: topo.verts.map(v => ({ id: v.id, pos: v.pos.clone() })),
+    edges: topo.edges.map(e => ({ id: e.id, v1: e.v1, v2: e.v2, faceIds: [...e.faceIds] })),
+    faces: topo.faces.map(f => ({ id: f.id, vIds: [...f.vIds], eIds: [...f.eIds] })),
+    nextId: topo.nextId,
+    selectedIds: new Set(selectedIds),
+  };
+}
+
+function restoreSnapshot(snap) {
+  topo.verts.forEach(v => { if (v.mesh.geometry) v.mesh.geometry.dispose(); if (v.mesh.material) v.mesh.material.dispose(); topo.vGroup.remove(v.mesh); });
+  topo.edges.forEach(e => { if (e.line.geometry) e.line.geometry.dispose(); if (e.line.material) e.line.material.dispose(); topo.eGroup.remove(e.line); });
+  topo.faces.forEach(f => { if (f.mesh.geometry) f.mesh.geometry.dispose(); if (f.mesh.material) f.mesh.material.dispose(); topo.fGroup.remove(f.mesh); });
+  topo.verts = []; topo.edges = []; topo.faces = [];
+  snap.verts.forEach(vd => { const m = new THREE.Mesh(topo.vGeo, topo.vMatDef.clone()); m.position.copy(vd.pos); topo.vGroup.add(m); topo.verts.push({ id: vd.id, pos: vd.pos.clone(), mesh: m }); });
+  snap.edges.forEach(ed => { const a = topo.getV(ed.v1), b = topo.getV(ed.v2); if (!a || !b) return; const g = new THREE.BufferGeometry().setFromPoints([a.pos.clone(), b.pos.clone()]); const l = new THREE.Line(g, topo.eMatDef.clone()); topo.eGroup.add(l); topo.edges.push({ id: ed.id, v1: ed.v1, v2: ed.v2, line: l, faceIds: [...ed.faceIds] }); });
+  snap.faces.forEach(fd => { const ps = fd.vIds.map(id => topo.getV(id).pos); const g = new THREE.BufferGeometry(); const verts = new Float32Array(ps.flatMap(p => [p.x, p.y, p.z])); g.setAttribute('position', new THREE.BufferAttribute(verts, 3)); g.setIndex(ps.length === 4 ? [0, 1, 2, 0, 2, 3] : [0, 1, 2]); g.computeVertexNormals(); const m = new THREE.Mesh(g, faceMatDefault.clone()); topo.fGroup.add(m); topo.faces.push({ id: fd.id, vIds: [...fd.vIds], eIds: [...fd.eIds], mesh: m }); });
+  topo.nextId = snap.nextId;
+  selectedIds = new Set(snap.selectedIds);
+  updateAllColors();
+  updateHUD();
+}
+
+function pushUndo() { undoStack.push(snapshotTopology()); if (undoStack.length > 50) undoStack.shift(); }
+function undo() { if (undoStack.length === 0) return; restoreSnapshot(undoStack.pop()); }
+
+// ============================================================================
+// COLORS
+// ============================================================================
+const C = {
+  faceDefault: 0x3a6ea5, faceHover: 0x5a9ed5, faceSelected: 0xe67e22,
+  edgeDefault: 0x88aacc, edgeHover: 0xffff00, edgeSelected: 0xff6600,
+  vertDefault: 0xffffff, vertHover: 0xffff00, vertSelected: 0xff3300,
+  refCornerDefault: 0xffffff, refCornerHover: 0xffff00, refCornerSelected: 0xff3300,
+  cursor: 0xffffff, cursorRing: 0xff0000,
+  axisX: 0xff0000, axisY: 0x00ff00, axisZ: 0x0000ff,
+};
+
+const faceMatDefault = new THREE.MeshStandardMaterial({ color: C.faceDefault, side: THREE.DoubleSide, roughness: 0.6, metalness: 0.1, transparent: true, opacity: 0.85 });
+const faceMatHover = faceMatDefault.clone(); faceMatHover.color.set(C.faceHover);
+const faceMatSelected = faceMatDefault.clone(); faceMatSelected.color.set(C.faceSelected);
+
+const refCornerGeo = new THREE.SphereGeometry(0.06, 8, 8);
+const refCornerMatDef = new THREE.MeshBasicMaterial({ color: C.refCornerDefault });
+const refCornerMatHov = new THREE.MeshBasicMaterial({ color: C.refCornerHover });
+const refCornerMatSel = new THREE.MeshBasicMaterial({ color: C.refCornerSelected });
+
+// ============================================================================
+// TOPOLOGY
+// ============================================================================
+class Topology {
+  constructor(scene) {
+    this.scene = scene;
+    this.verts = []; // {id, pos:Vector3, mesh:Mesh}
+    this.edges = []; // {id, v1, v2, line:Line, faceIds:[]}
+    this.faces = []; // {id, vIds:[], eIds:[], mesh:Mesh}
+    this.nextId = 1;
+
+    this.vGroup = new THREE.Group();
+    this.eGroup = new THREE.Group();
+    this.fGroup = new THREE.Group();
+    scene.add(this.vGroup, this.eGroup, this.fGroup);
+
+    this.vGeo = new THREE.SphereGeometry(0.06, 8, 8);
+    this.vMatDef = new THREE.MeshBasicMaterial({ color: C.vertDefault });
+    this.vMatHov = new THREE.MeshBasicMaterial({ color: C.vertHover });
+    this.vMatSel = new THREE.MeshBasicMaterial({ color: C.vertSelected });
+    this.eMatDef = new THREE.LineBasicMaterial({ color: C.edgeDefault });
+    this.eMatHov = new THREE.LineBasicMaterial({ color: C.edgeHover });
+    this.eMatSel = new THREE.LineBasicMaterial({ color: C.edgeSelected });
+  }
+
+  addV(p) {
+    const m = new THREE.Mesh(this.vGeo, this.vMatDef.clone());
+    m.position.copy(p);
+    this.vGroup.add(m);
+    const v = { id: this.nextId++, pos: p.clone(), mesh: m };
+    this.verts.push(v);
+    return v;
+  }
+
+  addE(v1, v2) {
+    const ex = this.edges.find(e => (e.v1 === v1 && e.v2 === v2) || (e.v1 === v2 && e.v2 === v1));
+    if (ex) return ex;
+    const a = this.getV(v1), b = this.getV(v2);
+    if (!a || !b) return null;
+    const g = new THREE.BufferGeometry().setFromPoints([a.pos.clone(), b.pos.clone()]);
+    const l = new THREE.Line(g, this.eMatDef.clone());
+    this.eGroup.add(l);
+    const e = { id: this.nextId++, v1, v2, line: l, faceIds: [] };
+    this.edges.push(e);
+    return e;
+  }
+
+  addF(vIds) {
+    const eIds = vIds.map((_, i) => this.addE(vIds[i], vIds[(i + 1) % vIds.length]).id);
+    const ps = vIds.map(id => this.getV(id).pos);
+    const g = new THREE.BufferGeometry();
+    const verts = new Float32Array(ps.flatMap(p => [p.x, p.y, p.z]));
+    g.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+    g.setIndex(ps.length === 4 ? [0, 1, 2, 0, 2, 3] : [0, 1, 2]);
+    g.computeVertexNormals();
+    const m = new THREE.Mesh(g, faceMatDefault.clone());
+    this.fGroup.add(m);
+    const f = { id: this.nextId++, vIds: [...vIds], eIds, mesh: m };
+    this.faces.push(f);
+    eIds.forEach(eid => { const e = this.getE(eid); if (e && !e.faceIds.includes(f.id)) e.faceIds.push(f.id); });
+    return f;
+  }
+
+  getV(id) { return this.verts.find(v => v.id === id); }
+  getE(id) { return this.edges.find(e => e.id === id); }
+  getF(id) { return this.faces.find(f => f.id === id); }
+
+  updateVGeo(id) {
+    const v = this.getV(id); if (!v) return;
+    v.mesh.position.copy(v.pos);
+    this.edges.forEach(e => {
+      if (e.v1 === id || e.v2 === id) {
+        const a = this.getV(e.v1), b = this.getV(e.v2);
+        e.line.geometry.setAttribute('position', new THREE.BufferAttribute(
+          new Float32Array([a.pos.x, a.pos.y, a.pos.z, b.pos.x, b.pos.y, b.pos.z]), 3));
+      }
+    });
+    this.faces.forEach(f => {
+      if (f.vIds.includes(id)) {
+        const ps = f.vIds.map(i => this.getV(i).pos);
+        const arr = f.mesh.geometry.attributes.position.array;
+        for (let i = 0; i < ps.length; i++) { arr[i * 3] = ps[i].x; arr[i * 3 + 1] = ps[i].y; arr[i * 3 + 2] = ps[i].z; }
+        f.mesh.geometry.attributes.position.needsUpdate = true;
+        f.mesh.geometry.computeVertexNormals();
+      }
+    });
+  }
+
+  moveV(id, np) { const v = this.getV(id); if (v) { v.pos.copy(np); this.updateVGeo(id); } }
+
+  removeF(id) {
+    const f = this.getF(id); if (!f) return;
+    f.eIds.forEach(eid => { const e = this.getE(eid); if (e) { e.faceIds = e.faceIds.filter(x => x !== id); if (e.faceIds.length === 0) this.removeE(eid); } });
+    if (f.mesh.geometry) f.mesh.geometry.dispose();
+    if (f.mesh.material) f.mesh.material.dispose();
+    this.fGroup.remove(f.mesh);
+    this.faces = this.faces.filter(x => x.id !== id);
+    this.cleanOrphans();
+  }
+
+  removeE(id) {
+    const e = this.getE(id); if (!e) return;
+    if (e.line.geometry) e.line.geometry.dispose();
+    if (e.line.material) e.line.material.dispose();
+    this.eGroup.remove(e.line);
+    this.edges = this.edges.filter(x => x.id !== id);
+  }
+
+  removeV(id) {
+    this.edges.filter(e => e.v1 === id || e.v2 === id).forEach(e => this.removeE(e.id));
+    this.faces.filter(f => f.vIds.includes(id)).forEach(f => this.removeF(f.id));
+    const v = this.getV(id);
+    if (v) { if (v.mesh.geometry) v.mesh.geometry.dispose(); if (v.mesh.material) v.mesh.material.dispose(); this.vGroup.remove(v.mesh); this.verts = this.verts.filter(x => x.id !== id); }
+  }
+
+  cleanOrphans() {
+    const used = new Set();
+    this.edges.forEach(e => { used.add(e.v1); used.add(e.v2); });
+    this.verts.filter(v => !used.has(v.id)).forEach(v => { if (v.mesh.geometry) v.mesh.geometry.dispose(); if (v.mesh.material) v.mesh.material.dispose(); this.vGroup.remove(v.mesh); });
+    this.verts = this.verts.filter(v => used.has(v.id));
+  }
+
+  setVMat(id, m) { const v = this.getV(id); if (v) { if (v.mesh.material) v.mesh.material.dispose(); v.mesh.material = m.clone(); } }
+  setEMat(id, m) { const e = this.getE(id); if (e) { if (e.line.material) e.line.material.dispose(); e.line.material = m.clone(); } }
+  setFMat(id, m) { const f = this.getF(id); if (f) { if (f.mesh.material) f.mesh.material.dispose(); f.mesh.material = m.clone(); } }
+
+  centroid(ids) {
+    const c = new THREE.Vector3(); let n = 0;
+    ids.forEach(id => { const v = this.getV(id); if (v) { c.add(v.pos); n++; } });
+    return n > 0 ? c.divideScalar(n) : c;
+  }
+
+  edgeOutward(eid) {
+    const e = this.getE(eid); if (!e) return new THREE.Vector3(1, 0, 0);
+    const v1 = this.getV(e.v1), v2 = this.getV(e.v2);
+    if (!v1 || !v2) return new THREE.Vector3(1, 0, 0);
+    if (e.faceIds.length === 0) { const d = new THREE.Vector3().subVectors(v2.pos, v1.pos).normalize(); return new THREE.Vector3(-d.z, 0, d.x).normalize(); }
+    const f = this.getF(e.faceIds[0]);
+    const fv = f.vIds.map(id => this.getV(id).pos);
+    const fn = new THREE.Vector3().crossVectors(new THREE.Vector3().subVectors(fv[1], fv[0]), new THREE.Vector3().subVectors(fv[2], fv[0])).normalize();
+    const ed = new THREE.Vector3().subVectors(v2.pos, v1.pos).normalize();
+    const out = new THREE.Vector3().crossVectors(fn, ed).normalize();
+    const fc = new THREE.Vector3(); fv.forEach(v => fc.add(v)); fc.divideScalar(fv.length);
+    const em = new THREE.Vector3().addVectors(v1.pos, v2.pos).multiplyScalar(0.5);
+    if (out.dot(new THREE.Vector3().subVectors(fc, em)) > 0) out.negate();
+    return out;
+  }
+}
+
+let topo;
+
+// ============================================================================
+// INIT
+// ============================================================================
+function init() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1a1a2e);
+  scene.add(new THREE.GridHelper(20, 20, 0x446688, 0x223344));
+  addGridLabels();
+
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+  updateCameraOrbit();
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+  const dl = new THREE.DirectionalLight(0xffffff, 1.0); dl.position.set(5, 12, 8); scene.add(dl);
+  scene.add(new THREE.HemisphereLight(0x88aacc, 0x444444, 0.5));
+
+  clock = new THREE.Clock();
+  topo = new Topology(scene);
+
+  const v1 = topo.addV(new THREE.Vector3(-0.5, 0, -0.5));
+  const v2 = topo.addV(new THREE.Vector3(0.5, 0, -0.5));
+  const v3 = topo.addV(new THREE.Vector3(0.5, 0, 0.5));
+  const v4 = topo.addV(new THREE.Vector3(-0.5, 0, 0.5));
+  topo.addF([v1.id, v2.id, v3.id, v4.id]);
+
+  setCursor3D(new THREE.Vector3(0, 0, 0));
+
+  setupEvents();
+  setupRefSystem();
+  updateHUD();
+  console.log('[INIT] Ready. V:', topo.verts.length, 'E:', topo.edges.length, 'F:', topo.faces.length);
+}
+
+// ============================================================================
+// EVENTS
+// ============================================================================
+function setupEvents() {
+  const c = renderer.domElement;
+  window.addEventListener('contextmenu', e => e.preventDefault());
+  window.addEventListener('keydown', onKey);
+  window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+  c.addEventListener('mousedown', onMouseDown);
+  c.addEventListener('mousemove', onMouseMove);
+  c.addEventListener('mouseup', onMouseUp);
+  c.addEventListener('wheel', onWheel, { passive: false });
+  window.addEventListener('resize', onResize);
+  document.getElementById('export-btn')?.addEventListener('click', exportGLB);
+}
+
+// ============================================================================
+// REFERENCE IMAGE SYSTEM
+// ============================================================================
+function setupRefSystem() {
+  const importBtn = document.getElementById('import-ref-btn');
+  const fileInput = document.getElementById('ref-image-input');
+  const meshSlider = document.getElementById('mesh-opacity-slider');
+  const meshVal = document.getElementById('mesh-opacity-val');
+  const imageSlider = document.getElementById('image-opacity-slider');
+  const imageVal = document.getElementById('image-opacity-val');
+
+  if (importBtn && fileInput) {
+    importBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      importReferenceImage(file);
+      fileInput.value = '';
+    });
+  }
+
+  if (meshSlider && meshVal) {
+    meshSlider.addEventListener('input', () => {
+      const val = parseInt(meshSlider.value);
+      meshVal.textContent = val + '%';
+      const op = val / 100;
+      topo.faces.forEach(f => {
+        if (f.mesh.material) f.mesh.material.opacity = op;
+      });
+      faceMatDefault.opacity = op;
+      faceMatHover.opacity = op;
+      faceMatSelected.opacity = op;
+    });
+  }
+
+  if (imageSlider && imageVal) {
+    imageSlider.addEventListener('input', () => {
+      const val = parseInt(imageSlider.value);
+      imageVal.textContent = val + '%';
+      const op = val / 100;
+      referenceImages.forEach(ref => {
+        ref.opacity = op;
+        ref.plane.material.opacity = op;
+      });
+    });
+  }
+}
+
+function importReferenceImage(file) {
+  if (!file || (!file.name.toLowerCase().endsWith('.png') && !file.name.toLowerCase().endsWith('.jpg') && !file.name.toLowerCase().endsWith('.jpeg'))) {
+    alert('Please select a .png or .jpg file.');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onload = () => createReferenceImage(img);
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function createReferenceImage(img) {
+  const imageId = (referenceImages.length > 0 ? Math.max(...referenceImages.map(r => r.imageId)) : 0) + 1;
+
+  const texture = new THREE.Texture(img);
+  texture.needsUpdate = true;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+
+  // Size based on aspect ratio, default width ~3 units
+  const aspect = img.width / Math.max(img.height, 1);
+  const refWidth = 3;
+  const refHeight = refWidth / aspect;
+  const hw = refWidth / 2;
+  const hh = refHeight / 2;
+
+  const center = cursor3DPos.clone();
+  const corners = [
+    { pos: new THREE.Vector3(center.x - hw, center.y, center.z - hh), handle: null },
+    { pos: new THREE.Vector3(center.x + hw, center.y, center.z - hh), handle: null },
+    { pos: new THREE.Vector3(center.x + hw, center.y, center.z + hh), handle: null },
+    { pos: new THREE.Vector3(center.x - hw, center.y, center.z + hh), handle: null },
+  ];
+
+  const positions = new Float32Array([
+    corners[0].pos.x, corners[0].pos.y, corners[0].pos.z,
+    corners[1].pos.x, corners[1].pos.y, corners[1].pos.z,
+    corners[2].pos.x, corners[2].pos.y, corners[2].pos.z,
+    corners[3].pos.x, corners[3].pos.y, corners[3].pos.z,
+  ]);
+  const uvs = new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geo.setIndex([0, 1, 2, 0, 2, 3]);
+  geo.computeVertexNormals();
+
+  const mat = new THREE.MeshBasicMaterial({
+    map: texture,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: parseInt(document.getElementById('image-opacity-slider')?.value || 100) / 100,
+    depthTest: true,
+    depthWrite: false,
+  });
+  const plane = new THREE.Mesh(geo, mat);
+
+  const group = new THREE.Group();
+  group.add(plane);
+
+  corners.forEach((c) => {
+    const handle = new THREE.Mesh(refCornerGeo, refCornerMatDef.clone());
+    handle.position.copy(c.pos);
+    c.handle = handle;
+    group.add(handle);
+  });
+
+  scene.add(group);
+
+  referenceImages.push({
+    imageId,
+    plane,
+    corners,
+    group,
+    opacity: parseInt(document.getElementById('image-opacity-slider')?.value || 100) / 100,
+  });
+
+  console.log(`[REF] Imported reference image ${imageId} — ${img.width}x${img.height}`);
+}
+
+function updateRefPlaneGeometry(ref) {
+  const posArr = ref.plane.geometry.attributes.position.array;
+  for (let i = 0; i < 4; i++) {
+    const p = ref.corners[i].pos;
+    posArr[i * 3] = p.x;
+    posArr[i * 3 + 1] = p.y;
+    posArr[i * 3 + 2] = p.z;
+  }
+  ref.plane.geometry.attributes.position.needsUpdate = true;
+  ref.plane.geometry.computeVertexNormals();
+}
+
+function moveRefCorner(imageId, cornerIndex, newPos) {
+  const ref = referenceImages.find(r => r.imageId === imageId);
+  if (!ref) return;
+  ref.corners[cornerIndex].pos.copy(newPos);
+  ref.corners[cornerIndex].handle.position.copy(newPos);
+  updateRefPlaneGeometry(ref);
+}
+
+// ============================================================================
+// KEYBOARD
+// ============================================================================
+function onKey(e) {
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+
+  // Selection mode
+  if (k === '1') { selectMode = 'vertex'; selectedIds.clear(); selectedRefCorners.clear(); updateAllColors(); updateHUD(); }
+  if (k === '2') { selectMode = 'edge'; selectedIds.clear(); selectedRefCorners.clear(); updateAllColors(); updateHUD(); }
+  if (k === '3') { selectMode = 'face'; selectedIds.clear(); selectedRefCorners.clear(); updateAllColors(); updateHUD(); }
+
+  // Select all
+  if (k === 'a') { selectAll(); e.preventDefault(); }
+
+  // Box select
+  if (k === 'b') { startBoxSelect(); e.preventDefault(); }
+
+  // Transform
+  if (k === 'g' && activeTool === 'idle') { startTransform('grab'); e.preventDefault(); }
+  if (k === 'r' && activeTool === 'idle') { startTransform('rotate'); e.preventDefault(); }
+  if (k === 's' && activeTool === 'idle') { startTransform('scale'); e.preventDefault(); }
+
+  // Axis lock during transform
+  if (activeTool !== 'idle' && activeTool !== 'box') {
+    if (k === 'x') { axisLock = 'x'; showAxisLine(); updateHUD(); }
+    if (k === 'y') { axisLock = 'y'; showAxisLine(); updateHUD(); }
+    if (k === 'z') { axisLock = 'z'; showAxisLine(); updateHUD(); }
+  }
+
+  // Modeling tools
+  if (k === 'e') { pushUndo(); doExtrude(); e.preventDefault(); }
+  if (k === 'f') { pushUndo(); doFill(); e.preventDefault(); }
+  if (k === 'm') { pushUndo(); doMerge(); e.preventDefault(); }
+  if (k === 'x' && activeTool === 'idle') { pushUndo(); doDelete(); e.preventDefault(); }
+  if (k === 'z' && e.ctrlKey) { undo(); e.preventDefault(); }
+
+  // Cancel
+  if (e.key === 'Escape') { cancelTransform(); e.preventDefault(); }
+
+  // Export
+  if (k === 'e' && e.ctrlKey) { exportGLB(); e.preventDefault(); }
+}
+
+function updateMousePosition(e) {
+  mouseScreen.set(e.clientX, e.clientY);
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+}
+
+function onMouseDown(e) {
+  e.preventDefault();
+  updateMousePosition(e);
+
+  if (e.button === 0) { // Left
+    if (activeTool === 'box') { finishBoxSelect(); return; }
+    if (activeTool !== 'idle') { confirmTransform(); return; }
+    // Left-click select
+    doSelect(e.shiftKey);
+  }
+
+  if (e.button === 1) { // Middle
+    if (e.shiftKey) {
+      // Shift+Middle-drag: move 3D cursor to follow mouse on ground plane
+      isPanning = false;
+      isOrbiting = false;
+      moveCursorDuringDrag = true;
+      prevMouse.copy(mouseScreen);
+    } else {
+      isOrbiting = true;
+      prevMouse.copy(mouseScreen);
+    }
+  }
+
+  if (e.button === 2) { // Right
+    if (e.shiftKey) { placeCursor3D(); }
+    else if (activeTool !== 'idle') { cancelTransform(); }
+  }
+}
+
+function onMouseMove(e) {
+  updateMousePosition(e);
+
+  if (isOrbiting || isPanning) {
+    const dx = e.clientX - prevMouse.x;
+    const dy = e.clientY - prevMouse.y;
+    if (isOrbiting) {
+      orbitPhi -= dx * 0.008;
+      orbitTheta = Math.max(0.05, Math.min(Math.PI - 0.05, orbitTheta - dy * 0.008));
+      // Orbit around current orbitTarget (don't snap back to cursor)
+      updateCameraOrbit();
+    }
+    if (moveCursorDuringDrag) {
+      // Move 3D cursor to mouse position on ground plane
+      placeCursor3D();
+    }
+    if (isPanning) {
+      const fw = new THREE.Vector3(); camera.getWorldDirection(fw); fw.y = 0; fw.normalize();
+      const rt = new THREE.Vector3().crossVectors(fw, new THREE.Vector3(0, 1, 0)).normalize();
+      camera.position.addScaledVector(rt, -dx * 0.01);
+      camera.position.addScaledVector(fw, dy * 0.01);
+      orbitTarget.addScaledVector(rt, -dx * 0.01);
+      orbitTarget.addScaledVector(fw, dy * 0.01);
+      updateCameraOrbit();
+    }
+    prevMouse.copy(mouseScreen);
+    return;
+  }
+
+  if (activeTool === 'box') { boxEnd.copy(mouseScreen); updateBoxOverlay(); return; }
+  if (activeTool !== 'idle') { updateTransform(); return; }
+
+  // Hover detection
+  doHover();
+}
+
+function onMouseUp(e) {
+  if (e.button === 1) { isOrbiting = false; isPanning = false; moveCursorDuringDrag = false; }
+  if (e.button === 0 && activeTool === 'box') { finishBoxSelect(); }
+  // Hide box overlay when not box-selecting
+  if (e.button === 0 && activeTool !== 'box') {
+    const overlay = document.getElementById('box-select-overlay');
+    if (overlay) overlay.style.display = 'none';
+  }
+}
+
+function onWheel(e) {
+  e.preventDefault();
+  orbitRadius = Math.max(1, Math.min(50, orbitRadius + (e.deltaY > 0 ? 0.5 : -0.5)));
+  updateCameraOrbit();
+}
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// ============================================================================
+// CAMERA ORBIT
+// ============================================================================
+function updateCameraOrbit() {
+  camera.position.set(
+    orbitTarget.x + orbitRadius * Math.sin(orbitTheta) * Math.cos(orbitPhi),
+    orbitTarget.y + orbitRadius * Math.cos(orbitTheta),
+    orbitTarget.z + orbitRadius * Math.sin(orbitTheta) * Math.sin(orbitPhi)
+  );
+  camera.lookAt(orbitTarget);
+}
+
+// ============================================================================
+// SELECTION
+// ============================================================================
+function getHovered() {
+  raycaster.setFromCamera(mouse, camera);
+
+  if (selectMode === 'face') {
+    const meshes = topo.faces.map(f => f.mesh);
+    const hits = raycaster.intersectObjects(meshes, false);
+    if (hits.length > 0) {
+      const idx = meshes.indexOf(hits[0].object);
+      if (idx >= 0) return { type: 'face', id: topo.faces[idx].id };
+    }
+  }
+
+  if (selectMode === 'edge') {
+    // Check edges on hovered faces first
+    const meshes = topo.faces.map(f => f.mesh);
+    const hits = raycaster.intersectObjects(meshes, false);
+    if (hits.length > 0) {
+      const idx = meshes.indexOf(hits[0].object);
+      if (idx >= 0) {
+        const f = topo.faces[idx];
+        let best = null, bestD = Infinity;
+        f.eIds.forEach(eid => { const e = topo.getE(eid); if (!e) return; const d = distPtSeg(hits[0].point, topo.getV(e.v1).pos, topo.getV(e.v2).pos); if (d < bestD) { bestD = d; best = eid; } });
+        if (best !== null && bestD < 0.3) return { type: 'edge', id: best };
+      }
+    }
+    // Free edges — increased threshold
+    let best = null, bestD = Infinity;
+    topo.edges.forEach(e => { const d = distRaySeg(raycaster.ray.origin, raycaster.ray.direction, topo.getV(e.v1).pos, topo.getV(e.v2).pos); if (d < bestD) { bestD = d; best = e.id; } });
+    if (best !== null && bestD < 0.3) return { type: 'edge', id: best };
+  }
+
+  if (selectMode === 'vertex') {
+    // Use raycaster against vertex meshes first (more reliable than distance)
+    const meshes = topo.verts.map(v => v.mesh);
+    const hits = raycaster.intersectObjects(meshes, false);
+    if (hits.length > 0) {
+      const idx = meshes.indexOf(hits[0].object);
+      if (idx >= 0) return { type: 'vertex', id: topo.verts[idx].id };
+    }
+    // Fallback: distance-based with larger threshold
+    let best = null, bestD = Infinity;
+    topo.verts.forEach(v => { const d = distRayPt(raycaster.ray.origin, raycaster.ray.direction, v.pos); if (d < bestD) { bestD = d; best = v.id; } });
+    if (best !== null && bestD < 0.25) return { type: 'vertex', id: best };
+    // Check reference image corners
+    for (const ref of referenceImages) {
+      for (let ci = 0; ci < ref.corners.length; ci++) {
+        const ch = ref.corners[ci].handle;
+        const chits = raycaster.intersectObject(ch, false);
+        if (chits.length > 0) return { type: 'refCorner', imageId: ref.imageId, cornerIndex: ci };
+      }
+    }
+    for (const ref of referenceImages) {
+      for (let ci = 0; ci < ref.corners.length; ci++) {
+        const d = distRayPt(raycaster.ray.origin, raycaster.ray.direction, ref.corners[ci].pos);
+        if (d < 0.25) return { type: 'refCorner', imageId: ref.imageId, cornerIndex: ci };
+      }
+    }
+  }
+
+  return null;
+}
+
+function doHover() {
+  // Clear old hover
+  clearHoverVisual();
+  hoveredId = null;
+  hoveredRefCorner = null;
+
+  const h = getHovered();
+  if (!h) return;
+
+  if (h.type === 'refCorner') {
+    hoveredRefCorner = { imageId: h.imageId, cornerIndex: h.cornerIndex };
+    const key = `${h.imageId}:${h.cornerIndex}`;
+    if (!selectedRefCorners.has(key)) {
+      const ref = referenceImages.find(r => r.imageId === h.imageId);
+      if (ref) {
+        ref.corners[h.cornerIndex].handle.material.dispose();
+        ref.corners[h.cornerIndex].handle.material = refCornerMatHov.clone();
+      }
+    }
+    return;
+  }
+
+  hoveredId = h.id;
+  if (h.type === 'vertex' && !selectedIds.has(h.id)) topo.setVMat(h.id, topo.vMatHov);
+  if (h.type === 'edge') {
+    const e = topo.getE(h.id);
+    if (e && !selectedIds.has(e.v1) && !selectedIds.has(e.v2)) topo.setEMat(h.id, topo.eMatHov);
+  }
+  if (h.type === 'face') {
+    const f = topo.getF(h.id);
+    if (f && !f.vIds.some(v => selectedIds.has(v))) topo.setFMat(h.id, faceMatHover);
+  }
+}
+
+function clearHoverVisual() {
+  if (hoveredRefCorner) {
+    const ref = referenceImages.find(r => r.imageId === hoveredRefCorner.imageId);
+    if (ref && ref.corners[hoveredRefCorner.cornerIndex]) {
+      const ch = ref.corners[hoveredRefCorner.cornerIndex];
+      const key = `${hoveredRefCorner.imageId}:${hoveredRefCorner.cornerIndex}`;
+      ch.handle.material.dispose();
+      ch.handle.material = selectedRefCorners.has(key) ? refCornerMatSel.clone() : refCornerMatDef.clone();
+    }
+  }
+  if (hoveredId === null) return;
+  // Restore all to default/selected state
+  updateAllColors();
+}
+
+function doSelect(additive) {
+  const h = getHovered();
+  if (!h) {
+    if (!additive) { selectedIds.clear(); selectedRefCorners.clear(); updateAllColors(); updateHUD(); }
+    return;
+  }
+
+  if (h.type === 'refCorner') {
+    const key = `${h.imageId}:${h.cornerIndex}`;
+    if (selectedRefCorners.has(key)) {
+      if (additive) selectedRefCorners.delete(key);
+    } else {
+      if (!additive) { selectedIds.clear(); selectedRefCorners.clear(); }
+      selectedRefCorners.add(key);
+    }
+    updateAllColors();
+    updateHUD();
+    return;
+  }
+
+  // Deselect ref corners when selecting topology (unless additive)
+  if (!additive) selectedRefCorners.clear();
+
+  if (h.type === 'vertex') {
+    if (selectedIds.has(h.id)) { if (additive) selectedIds.delete(h.id); }
+    else { if (!additive) selectedIds.clear(); selectedIds.add(h.id); }
+  } else if (h.type === 'edge') {
+    const e = topo.getE(h.id);
+    if (e) {
+      const both = e.v1 === e.v2 || (selectedIds.has(e.v1) && selectedIds.has(e.v2));
+      if (both && additive) { selectedIds.delete(e.v1); selectedIds.delete(e.v2); }
+      else { if (!additive) selectedIds.clear(); selectedIds.add(e.v1); selectedIds.add(e.v2); }
+    }
+  } else if (h.type === 'face') {
+    const f = topo.getF(h.id);
+    if (f) {
+      const all = f.vIds.every(v => selectedIds.has(v));
+      if (all && additive) f.vIds.forEach(v => selectedIds.delete(v));
+      else { if (!additive) selectedIds.clear(); f.vIds.forEach(v => selectedIds.add(v)); }
+    }
+  }
+  updateAllColors();
+  updateHUD();
+}
+
+function selectAll() {
+  selectedRefCorners.clear();
+  topo.verts.forEach(v => selectedIds.add(v.id));
+  updateAllColors();
+  updateHUD();
+}
+
+function startBoxSelect() {
+  activeTool = 'box';
+  boxStart.copy(mouseScreen);
+  boxEnd.copy(mouseScreen);
+  updateBoxOverlay();
+  updateHUD();
+}
+
+function updateBoxOverlay() {
+  const overlay = document.getElementById('box-select-overlay');
+  if (!overlay) return;
+  if (activeTool !== 'box') { overlay.style.display = 'none'; return; }
+  const x1 = Math.min(boxStart.x, boxEnd.x);
+  const y1 = Math.min(boxStart.y, boxEnd.y);
+  const w = Math.abs(boxEnd.x - boxStart.x);
+  const h = Math.abs(boxEnd.y - boxStart.y);
+  overlay.style.display = 'block';
+  overlay.style.left = x1 + 'px';
+  overlay.style.top = y1 + 'px';
+  overlay.style.width = w + 'px';
+  overlay.style.height = h + 'px';
+}
+
+function finishBoxSelect() {
+  activeTool = 'idle';
+  updateBoxOverlay();
+  selectedRefCorners.clear();
+  // Select all verts within box
+  const x1 = Math.min(boxStart.x, boxEnd.x);
+  const x2 = Math.max(boxStart.x, boxEnd.x);
+  const y1 = Math.min(boxStart.y, boxEnd.y);
+  const y2 = Math.max(boxStart.y, boxEnd.y);
+  selectedIds.clear();
+  topo.verts.forEach(v => {
+    const sp = v.pos.clone().project(camera);
+    const sx = (sp.x + 1) / 2 * window.innerWidth;
+    const sy = (1 - sp.y) / 2 * window.innerHeight;
+    if (sx >= x1 && sx <= x2 && sy >= y1 && sy <= y2) selectedIds.add(v.id);
+  });
+  updateAllColors();
+  updateHUD();
+}
+
+function updateAllColors() {
+  topo.verts.forEach(v => {
+    if (selectedIds.has(v.id)) topo.setVMat(v.id, topo.vMatSel);
+    else topo.setVMat(v.id, topo.vMatDef);
+  });
+  topo.edges.forEach(e => {
+    if (selectedIds.has(e.v1) && selectedIds.has(e.v2)) topo.setEMat(e.id, topo.eMatSel);
+    else topo.setEMat(e.id, topo.eMatDef);
+  });
+  topo.faces.forEach(f => {
+    if (f.vIds.every(v => selectedIds.has(v))) topo.setFMat(f.id, faceMatSelected);
+    else topo.setFMat(f.id, faceMatDefault);
+  });
+  // Reference image corner colors
+  referenceImages.forEach(ref => {
+    ref.corners.forEach((c, ci) => {
+      const key = `${ref.imageId}:${ci}`;
+      if (selectedRefCorners.has(key)) {
+        c.handle.material.dispose();
+        c.handle.material = refCornerMatSel.clone();
+      } else if (hoveredRefCorner && hoveredRefCorner.imageId === ref.imageId && hoveredRefCorner.cornerIndex === ci) {
+        c.handle.material.dispose();
+        c.handle.material = refCornerMatHov.clone();
+      } else {
+        c.handle.material.dispose();
+        c.handle.material = refCornerMatDef.clone();
+      }
+    });
+  });
+}
+
+// ============================================================================
+// TRANSFORM
+// ============================================================================
+function startTransform(tool) {
+  if (selectedIds.size === 0 && selectedRefCorners.size === 0) return;
+  activeTool = tool;
+  axisLock = null;
+  transformStartMouse.copy(mouse);
+
+  // Compute centroid from both topology and ref corners
+  const allPts = [];
+  [...selectedIds].forEach(id => { const v = topo.getV(id); if (v) allPts.push(v.pos.clone()); });
+  selectedRefCorners.forEach(key => {
+    const [imgId, ci] = key.split(':').map(Number);
+    const ref = referenceImages.find(r => r.imageId === imgId);
+    if (ref) allPts.push(ref.corners[ci].pos.clone());
+  });
+  transformCentroid = new THREE.Vector3();
+  allPts.forEach(p => transformCentroid.add(p));
+  if (allPts.length > 0) transformCentroid.divideScalar(allPts.length);
+
+  transformStartPositions = [...selectedIds].map(id => ({ id, pos: topo.getV(id).pos.clone() }));
+  transformRefCorners = [];
+  selectedRefCorners.forEach(key => {
+    const [imgId, ci] = key.split(':').map(Number);
+    const ref = referenceImages.find(r => r.imageId === imgId);
+    if (ref) transformRefCorners.push({ imageId: imgId, cornerIndex: ci, pos: ref.corners[ci].pos.clone() });
+  });
+  showAxisLine();
+  updateHUD();
+}
+
+function updateTransform() {
+  const planeNormal = new THREE.Vector3();
+  camera.getWorldDirection(planeNormal);
+  planeNormal.negate();
+  const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal, transformCentroid);
+
+  const ndcToPlane = (nx, ny) => {
+    const ndc = new THREE.Vector3(nx, ny, 0.5).unproject(camera);
+    const dir = ndc.clone().sub(camera.position).normalize();
+    const isect = new THREE.Vector3();
+    return plane.intersectLine(new THREE.Line3(camera.position.clone(), camera.position.clone().add(dir)), isect) ? isect : null;
+  };
+
+  let sw = ndcToPlane(transformStartMouse.x, transformStartMouse.y);
+  let ew = ndcToPlane(mouse.x, mouse.y);
+
+  const applyToRefCorners = (fn) => {
+    transformRefCorners.forEach(rc => {
+      const r = referenceImages.find(ref => ref.imageId === rc.imageId);
+      if (!r) return;
+      const newPos = fn(rc.pos.clone());
+      moveRefCorner(rc.imageId, rc.cornerIndex, newPos);
+    });
+  };
+
+  // Fallback: if plane intersection fails, use camera right/up vectors
+  if (!sw || !ew) {
+    if (activeTool === 'grab') {
+      const camRight = new THREE.Vector3();
+      const camUp = new THREE.Vector3();
+      camera.getWorldDirection(new THREE.Vector3()); // ensure matrix updated
+      camRight.setFromMatrixColumn(camera.matrixWorld, 0);
+      camUp.setFromMatrixColumn(camera.matrixWorld, 1);
+      const dxN = (mouse.x - transformStartMouse.x) * 5;
+      const dyN = (mouse.y - transformStartMouse.y) * 5;
+      let delta = new THREE.Vector3().addScaledVector(camRight, dxN).addScaledVector(camUp, dyN);
+      if (axisLock === 'x') delta.set(delta.x, 0, 0);
+      if (axisLock === 'y') delta.set(0, delta.y, 0);
+      if (axisLock === 'z') delta.set(0, 0, delta.z);
+      transformStartPositions.forEach(sp => topo.moveV(sp.id, sp.pos.clone().add(delta)));
+      applyToRefCorners(sp => sp.clone().add(delta));
+    } else if (activeTool === 'rotate') {
+      // Rotate fallback: rotate around camera forward axis (pure 2D from viewer)
+      const angle = (mouse.x - transformStartMouse.x) * 10;
+      const camDir = new THREE.Vector3();
+      camera.getWorldDirection(camDir);
+      camDir.normalize();
+      const toO = new THREE.Matrix4().makeTranslation(-transformCentroid.x, -transformCentroid.y, -transformCentroid.z);
+      const frO = new THREE.Matrix4().makeTranslation(transformCentroid.x, transformCentroid.y, transformCentroid.z);
+      let tf = new THREE.Matrix4().multiply(frO).multiply(new THREE.Matrix4().makeRotationAxis(camDir, angle)).multiply(toO);
+      transformStartPositions.forEach(sp => topo.moveV(sp.id, sp.pos.clone().applyMatrix4(tf)));
+      applyToRefCorners(sp => sp.clone().applyMatrix4(tf));
+    } else if (activeTool === 'scale') {
+      const scl = Math.max(0.1, Math.min(5, 1 + (mouse.x - transformStartMouse.x) * 5));
+      transformStartPositions.forEach(sp => {
+        const rel = new THREE.Vector3().subVectors(sp.pos, transformCentroid).multiplyScalar(scl);
+        topo.moveV(sp.id, new THREE.Vector3().copy(transformCentroid).add(rel));
+      });
+      applyToRefCorners(sp => {
+        const rel = new THREE.Vector3().subVectors(sp, transformCentroid).multiplyScalar(scl);
+        return new THREE.Vector3().copy(transformCentroid).add(rel);
+      });
+    }
+    return;
+  }
+
+  if (activeTool === 'grab') {
+    let delta = new THREE.Vector3().subVectors(ew, sw);
+    if (axisLock === 'x') delta.set(delta.x, 0, 0);
+    if (axisLock === 'y') delta.set(0, delta.y, 0);
+    if (axisLock === 'z') delta.set(0, 0, delta.z);
+    transformStartPositions.forEach(sp => topo.moveV(sp.id, sp.pos.clone().add(delta)));
+    applyToRefCorners(sp => sp.clone().add(delta));
+  } else if (activeTool === 'rotate') {
+    // Rotate around camera forward axis only (pure 2D rotation from viewer perspective)
+    const angle = (mouse.x - transformStartMouse.x) * 10;
+    const camDir = new THREE.Vector3();
+    camera.getWorldDirection(camDir);
+    camDir.normalize();
+    const toO = new THREE.Matrix4().makeTranslation(-transformCentroid.x, -transformCentroid.y, -transformCentroid.z);
+    const frO = new THREE.Matrix4().makeTranslation(transformCentroid.x, transformCentroid.y, transformCentroid.z);
+    let tf = new THREE.Matrix4().multiply(frO).multiply(new THREE.Matrix4().makeRotationAxis(camDir, angle)).multiply(toO);
+    transformStartPositions.forEach(sp => topo.moveV(sp.id, sp.pos.clone().applyMatrix4(tf)));
+    applyToRefCorners(sp => sp.clone().applyMatrix4(tf));
+  } else if (activeTool === 'scale') {
+    const scl = Math.max(0.1, Math.min(5, 1 + (mouse.x - transformStartMouse.x) * 2));
+    transformStartPositions.forEach(sp => {
+      const rel = new THREE.Vector3().subVectors(sp.pos, transformCentroid).multiplyScalar(scl);
+      topo.moveV(sp.id, new THREE.Vector3().copy(transformCentroid).add(rel));
+    });
+    applyToRefCorners(sp => {
+      const rel = new THREE.Vector3().subVectors(sp, transformCentroid).multiplyScalar(scl);
+      return new THREE.Vector3().copy(transformCentroid).add(rel);
+    });
+  }
+}
+
+function confirmTransform() {
+  activeTool = 'idle';
+  axisLock = null;
+  clearAxisLine();
+  transformStartPositions = [];
+  transformRefCorners = [];
+  updateHUD();
+}
+
+function cancelTransform() {
+  if (activeTool === 'box') { activeTool = 'idle'; updateHUD(); return; }
+  if (activeTool !== 'idle') {
+    // Restore positions
+    transformStartPositions.forEach(sp => topo.moveV(sp.id, sp.pos));
+    transformRefCorners.forEach(rc => {
+      const r = referenceImages.find(ref => ref.imageId === rc.imageId);
+      if (r) moveRefCorner(rc.imageId, rc.cornerIndex, rc.pos);
+    });
+    activeTool = 'idle';
+    axisLock = null;
+    clearAxisLine();
+    transformStartPositions = [];
+    transformRefCorners = [];
+    updateHUD();
+  }
+}
+
+function showAxisLine() {
+  clearAxisLine();
+  if (!axisLock) return;
+  const len = 100;
+  const pts = [transformCentroid.clone(), transformCentroid.clone()];
+  if (axisLock === 'x') { pts[0].x -= len; pts[1].x += len; }
+  if (axisLock === 'y') { pts[0].y -= len; pts[1].y += len; }
+  if (axisLock === 'z') { pts[0].z -= len; pts[1].z += len; }
+  const col = axisLock === 'x' ? C.axisX : axisLock === 'y' ? C.axisY : C.axisZ;
+  axisLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.6 }));
+  scene.add(axisLine);
+}
+
+function clearAxisLine() {
+  if (axisLine) { scene.remove(axisLine); if (axisLine.geometry) axisLine.geometry.dispose(); if (axisLine.material) axisLine.material.dispose(); axisLine = null; }
+}
+
+// ============================================================================
+// MODELING TOOLS
+// ============================================================================
+function doExtrude() {
+  if (selectedIds.size === 0) return;
+  const ids = [...selectedIds];
+
+  // Determine extrusion direction
+  let normal;
+  const faces = topo.faces.filter(f => f.vIds.every(v => selectedIds.has(v)));
+  const selectedEdges = topo.edges.filter(e => selectedIds.has(e.v1) && selectedIds.has(e.v2));
+
+  if (faces.length > 0) {
+    // Face extrusion: use face normal
+    const f = faces[0];
+    const fv = f.vIds.map(id => topo.getV(id).pos);
+    normal = new THREE.Vector3().crossVectors(
+      new THREE.Vector3().subVectors(fv[1], fv[0]),
+      new THREE.Vector3().subVectors(fv[2], fv[0])
+    ).normalize();
+  } else if (selectedEdges.length > 0) {
+    // Edge extrusion: use edgeOutward (extends in the edge's outward direction)
+    normal = topo.edgeOutward(selectedEdges[0].id);
+  } else {
+    // Vertex extrusion: use up
+    normal = new THREE.Vector3(0, 1, 0);
+  }
+
+  // Create new vertices offset along the extrusion direction
+  const newVerts = {};
+  ids.forEach(id => {
+    newVerts[id] = topo.addV(topo.getV(id).pos.clone().addScaledVector(normal, 1)).id;
+  });
+
+  // For edge extrusion: create a face connecting old edge to new edge
+  if (selectedEdges.length > 0 && faces.length === 0) {
+    selectedEdges.forEach(e => {
+      topo.addF([e.v1, e.v2, newVerts[e.v2], newVerts[e.v1]]);
+    });
+  }
+
+  // Also create faces for ALL internal edges (both endpoints selected) to ensure filled quads
+  const internalEdges = topo.edges.filter(e => selectedIds.has(e.v1) && selectedIds.has(e.v2));
+  internalEdges.forEach(e => {
+    topo.addF([e.v1, e.v2, newVerts[e.v2], newVerts[e.v1]]);
+  });
+
+  // Create side faces connecting old boundary edges to new verts
+  const boundaryEdges = topo.edges.filter(e =>
+    (selectedIds.has(e.v1) && !selectedIds.has(e.v2)) ||
+    (!selectedIds.has(e.v1) && selectedIds.has(e.v2))
+  );
+  boundaryEdges.forEach(e => {
+    const v1Sel = selectedIds.has(e.v1) ? e.v1 : e.v2;
+    const v2Sel = selectedIds.has(e.v2) ? e.v2 : e.v1;
+    topo.addF([v1Sel, v2Sel, newVerts[v2Sel], newVerts[v1Sel]]);
+  });
+
+  // If a full face was selected, create the top face
+  if (faces.length > 0) {
+    const f = faces[0];
+    const newTopIds = f.vIds.map(v => newVerts[v]);
+    topo.addF(newTopIds);
+  }
+
+  // If no faces but we have a closed loop of vertices, create a top face
+  if (faces.length === 0 && ids.length >= 3) {
+    const selEdges = topo.edges.filter(e => selectedIds.has(e.v1) && selectedIds.has(e.v2));
+    if (selEdges.length >= ids.length) {
+      topo.addF(ids.map(id => newVerts[id]));
+    }
+  }
+
+  // Select new vertices
+  selectedIds.clear();
+  Object.values(newVerts).forEach(id => selectedIds.add(id));
+  updateAllColors();
+  updateHUD();
+
+  // Auto-start grab mode so user can immediately move the extruded geometry
+  startTransform('grab');
+}
+
+function doFill() {
+  if (selectedIds.size < 2) return;
+  const ids = [...selectedIds];
+  if (ids.length === 2) {
+    topo.addE(ids[0], ids[1]);
+  } else if (ids.length === 3) {
+    topo.addF(ids);
+  } else if (ids.length === 4) {
+    // Try to order as a proper quad: find connected boundary
+    topo.addF(ids);
+  } else {
+    // 5+ vertices: fan triangulation from first vertex
+    for (let i = 1; i < ids.length - 1; i++) {
+      topo.addF([ids[0], ids[i], ids[i + 1]]);
+    }
+  }
+  updateAllColors();
+}
+
+function doMerge() {
+  if (selectedIds.size < 2) return;
+  const ids = [...selectedIds];
+  const c = topo.centroid(ids);
+  const keepId = ids[0];
+  topo.moveV(keepId, c);
+  ids.slice(1).forEach(id => {
+    topo.edges.filter(e => e.v1 === id || e.v2 === id).forEach(e => {
+      if (e.v1 === id) e.v1 = keepId;
+      if (e.v2 === id) e.v2 = keepId;
+      topo.updateVGeo(keepId);
+    });
+    topo.faces.filter(f => f.vIds.includes(id)).forEach(f => {
+      f.vIds = f.vIds.map(v => v === id ? keepId : v);
+    });
+    topo.removeV(id);
+  });
+  selectedIds.clear();
+  selectedIds.add(keepId);
+  // Clean up duplicate edges
+  topo.edges = topo.edges.filter((e, i, arr) => arr.findIndex(x => (x.v1 === e.v1 && x.v2 === e.v2) || (x.v1 === e.v2 && x.v2 === e.v1)) === i);
+  updateAllColors();
+  updateHUD();
+}
+
+function doDelete() {
+  if (selectedIds.size === 0) return;
+  const ids = [...selectedIds];
+  ids.forEach(id => topo.removeV(id));
+  selectedIds.clear();
+  updateAllColors();
+  updateHUD();
+}
+
+// ============================================================================
+// 3D CURSOR
+// ============================================================================
+function placeCursor3D() {
+  raycaster.setFromCamera(mouse, camera);
+  // Collect all snappable objects: topology face meshes + reference image planes
+  const targets = [];
+  topo.faces.forEach(f => targets.push(f.mesh));
+  referenceImages.forEach(ref => targets.push(ref.plane));
+  if (targets.length === 0) return; // nothing to snap to
+  const hits = raycaster.intersectObjects(targets, false);
+  if (hits.length > 0) {
+    setCursor3D(hits[0].point.clone());
+  }
+  // If nothing hit, cursor stays where it was (no floating in air)
+}
+
+function setCursor3D(pos) {
+  if (cursor3D) { scene.remove(cursor3D); cursor3D.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }); }
+  cursor3DPos.copy(pos);
+  cursor3D = new THREE.Group();
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.02, 8, 16), new THREE.MeshBasicMaterial({ color: C.cursorRing }));
+  cursor3D.add(ring);
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.03, 6, 6), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  cursor3D.add(dot);
+  cursor3D.position.copy(pos);
+  scene.add(cursor3D);
+  orbitTarget.copy(pos);
+  updateCameraOrbit();
+}
+
+// ============================================================================
+// DISTANCE MATH
+// ============================================================================
+function distPtSeg(pt, a, b) {
+  const v = new THREE.Vector3().subVectors(b, a);
+  const w = new THREE.Vector3().subVectors(pt, a);
+  const c1 = w.dot(v); if (c1 <= 0) return pt.distanceTo(a);
+  const c2 = v.dot(v); if (c2 <= c1) return pt.distanceTo(b);
+  return pt.distanceTo(new THREE.Vector3().copy(a).addScaledVector(v, c1 / c2));
+}
+function distRayPt(ro, rd, pt) {
+  const v = new THREE.Vector3().subVectors(pt, ro);
+  const t = v.dot(rd);
+  return t < 0 ? pt.distanceTo(ro) : pt.distanceTo(new THREE.Vector3().copy(ro).addScaledVector(rd, t));
+}
+function distRaySeg(ro, rd, a, b) {
+  const s = new THREE.Vector3().subVectors(b, a);
+  const rxs = new THREE.Vector3().crossVectors(rd, s);
+  const m = rxs.length();
+  if (m < 1e-8) return Math.min(distRayPt(ro, rd, a), distRayPt(ro, rd, b));
+  const qp = new THREE.Vector3().subVectors(a, ro);
+  const t = new THREE.Vector3().crossVectors(qp, s).dot(rxs) / (m * m);
+  const u = Math.max(0, Math.min(1, new THREE.Vector3().crossVectors(qp, rd).dot(rxs) / (m * m)));
+  return new THREE.Vector3().copy(ro).addScaledVector(rd, t).distanceTo(new THREE.Vector3().copy(a).addScaledVector(s, u));
+}
+
+// ============================================================================
+// HUD
+// ============================================================================
+function updateHUD() {
+  const m = document.getElementById('mode-indicator');
+  const t = document.getElementById('tool-indicator');
+  const a = document.getElementById('axis-indicator');
+  const s = document.getElementById('selected-indicator');
+
+  if (m) { m.textContent = selectMode.toUpperCase(); m.className = 'badge badge-' + selectMode; }
+  if (t) { t.textContent = activeTool.toUpperCase(); t.className = 'badge badge-' + (activeTool === 'idle' ? 'idle' : activeTool === 'grab' ? 'grab' : activeTool); }
+  if (a) { a.style.display = axisLock ? 'inline-block' : 'none'; if (axisLock) a.textContent = axisLock.toUpperCase(); }
+  if (s) {
+    const vCount = selectedIds.size;
+    const rcCount = selectedRefCorners.size;
+    const parts = [];
+    if (vCount > 0) parts.push(vCount + ' vert' + (vCount > 1 ? 's' : ''));
+    if (rcCount > 0) parts.push(rcCount + ' ref');
+    s.textContent = parts.length > 0 ? parts.join(', ') : 'None';
+  }
+}
+
+// ============================================================================
+// ANIMATION LOOP
+// ============================================================================
+function animate() {
+  requestAnimationFrame(animate);
+  // WASD movement
+  const delta = clock.getDelta();
+  const spd = 5 * delta;
+  const fw = new THREE.Vector3(); camera.getWorldDirection(fw); fw.y = 0; fw.normalize();
+  const rt = new THREE.Vector3().crossVectors(fw, new THREE.Vector3(0, 1, 0)).normalize();
+  if (keys['w']) { camera.position.addScaledVector(fw, spd); orbitTarget.addScaledVector(fw, spd); updateCameraOrbit(); }
+  if (keys['s']) { camera.position.addScaledVector(fw, -spd); orbitTarget.addScaledVector(fw, -spd); updateCameraOrbit(); }
+  if (keys['a']) { camera.position.addScaledVector(rt, -spd); orbitTarget.addScaledVector(rt, -spd); updateCameraOrbit(); }
+  if (keys['d']) { camera.position.addScaledVector(rt, spd); orbitTarget.addScaledVector(rt, spd); updateCameraOrbit(); }
+  if (keys['q']) { camera.position.y += spd; orbitTarget.y += spd; updateCameraOrbit(); }
+  if (keys['e']) { camera.position.y -= spd; orbitTarget.y -= spd; updateCameraOrbit(); }
+
+  // Draw box select overlay
+  if (activeTool === 'box') {
+    // Could draw a 2D overlay; for now just re-render
+  }
+
+  renderer.render(scene, camera);
+}
+
+// ============================================================================
+// GRID LABELS
+// ============================================================================
+function addGridLabels() {
+  const ag = new THREE.Group();
+  ag.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-10, 0, 0), new THREE.Vector3(10, 0, 0)]), new THREE.LineBasicMaterial({ color: 0xff4444 })));
+  ag.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, -10), new THREE.Vector3(0, 0, 10)]), new THREE.LineBasicMaterial({ color: 0x4444ff })));
+  const mk = (txt, pos, col) => {
+    const c = document.createElement('canvas'); c.width = 128; c.height = 64;
+    const ctx = c.getContext('2d'); ctx.fillStyle = col; ctx.font = 'bold 28px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(txt, 64, 32);
+    const tx = new THREE.CanvasTexture(c); tx.minFilter = THREE.LinearFilter;
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tx, transparent: true, depthTest: false, depthWrite: false }));
+    sp.position.copy(pos); sp.scale.set(1.5, 0.75, 1); return sp;
+  };
+  const lg = new THREE.Group();
+  lg.add(mk('+X', new THREE.Vector3(10.5, 0.3, 0), '#ff6666'));
+  lg.add(mk('-X', new THREE.Vector3(-10.5, 0.3, 0), '#ff6666'));
+  lg.add(mk('+Z', new THREE.Vector3(0, 0.3, 10.5), '#6666ff'));
+  lg.add(mk('-Z', new THREE.Vector3(0, 0.3, -10.5), '#6666ff'));
+  lg.add(mk('0', new THREE.Vector3(0, 0.2, 0), '#ffffff'));
+  for (let i = -10; i <= 10; i += 5) { if (i === 0) continue; lg.add(mk(i.toString(), new THREE.Vector3(i, 0.2, 0), '#888888')); lg.add(mk(i.toString(), new THREE.Vector3(0, 0.2, i), '#888888')); }
+  scene.add(ag, lg);
+}
+
+// ============================================================================
+// GLB EXPORT
+// ============================================================================
+async function exportGLB() {
+  try {
+    const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
+    const es = new THREE.Scene();
+
+    // Merge ALL face geometry into a single BufferGeometry for valid glTF
+    const allPositions = [];
+    const allNormals = [];
+    const allIndices = [];
+    let vertexOffset = 0;
+
+    topo.faces.forEach(f => {
+      const geo = f.mesh.geometry;
+      const posArr = geo.attributes.position.array;
+      const normArr = geo.attributes.normal ? geo.attributes.normal.array : null;
+      const idxArr = geo.index ? geo.index.array : null;
+
+      // Add positions
+      for (let i = 0; i < posArr.length; i += 3) {
+        allPositions.push(posArr[i], posArr[i + 1], posArr[i + 2]);
+      }
+      // Add normals (or compute if missing)
+      if (normArr) {
+        for (let i = 0; i < normArr.length; i += 3) {
+          allNormals.push(normArr[i], normArr[i + 1], normArr[i + 2]);
+        }
+      } else {
+        const count = posArr.length / 3;
+        for (let i = 0; i < count; i++) {
+          allNormals.push(0, 1, 0);
+        }
+      }
+      // Add indices with offset
+      if (idxArr) {
+        for (let i = 0; i < idxArr.length; i++) {
+          allIndices.push(idxArr[i] + vertexOffset);
+        }
+      } else {
+        const count = posArr.length / 3;
+        for (let i = 0; i < count; i++) {
+          allIndices.push(i + vertexOffset);
+        }
+      }
+      vertexOffset += posArr.length / 3;
+    });
+
+    // Create merged geometry
+    const mergedGeo = new THREE.BufferGeometry();
+    mergedGeo.setAttribute('position', new THREE.Float32BufferAttribute(allPositions, 3));
+    mergedGeo.setAttribute('normal', new THREE.Float32BufferAttribute(allNormals, 3));
+    mergedGeo.setIndex(allIndices);
+
+    const mergedMesh = new THREE.Mesh(mergedGeo, new THREE.MeshStandardMaterial({ color: C.faceDefault, side: THREE.DoubleSide, roughness: 0.6, metalness: 0.1 }));
+    es.add(mergedMesh);
+
+    new GLTFExporter().parse(es, (r) => {
+      const b = new Blob([r], { type: 'application/octet-stream' });
+      const u = URL.createObjectURL(b); const l = document.createElement('a'); l.href = u; l.download = 'model.glb';
+      document.body.appendChild(l); l.click(); document.body.removeChild(l); URL.revokeObjectURL(u);
+      console.log('Exported model.glb with', topo.faces.length, 'faces merged into 1 mesh');
+    }, (e) => console.error(e), { binary: true });
+
+    mergedGeo.dispose();
+    mergedMesh.material.dispose();
+  } catch (e) { console.error(e); alert('Export failed: ' + e.message); }
+}
+
+// ============================================================================
+// STARTUP
+// ============================================================================
+init();
+animate();
+window.topo = topo;
