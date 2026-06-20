@@ -4,7 +4,9 @@ A web-based 3D modeler with Blender-style shortcuts and controls. Build 3D geome
 
 > ⚠️ **Important — after importing the exported model into Blender:** You **must** run
 > **Edit Mode → Mesh → Clean Up → Merge Vertices by Distance**, or the 3D model
-> imported from this program will not work.
+> imported from this program will not work. You will also need to first add and
+> **apply a Subdivision Surface modifier**, then a **Remesh (Voxel) modifier**, in
+> order to get somewhat workable, mostly-quads topology.
 
 ---
 
