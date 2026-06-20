@@ -1171,11 +1171,17 @@ function updateTransform() {
   planeNormal.negate();
   const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal, transformCentroid);
 
+  // Use a Raycaster (NOT a fixed-length Line3) to find where the cursor ray hits
+  // the centroid plane. setFromCamera() builds the correct ray for BOTH
+  // perspective and orthographic cameras (parallel rays for ortho), and
+  // ray.intersectPlane() uses an INFINITE ray — so it succeeds at any zoom level.
+  // This keeps the grab tracking the mouse exactly 1:1 in orthographic mode no
+  // matter how far you scroll in, instead of falling back to the NDC-scaled path
+  // that ignored the ortho frustum size and moved faster than the mouse.
   const ndcToPlane = (nx, ny) => {
-    const ndc = new THREE.Vector3(nx, ny, 0.5).unproject(camera);
-    const dir = ndc.clone().sub(camera.position).normalize();
+    raycaster.setFromCamera({ x: nx, y: ny }, camera);
     const isect = new THREE.Vector3();
-    return plane.intersectLine(new THREE.Line3(camera.position.clone(), camera.position.clone().add(dir)), isect) ? isect : null;
+    return raycaster.ray.intersectPlane(plane, isect) ? isect.clone() : null;
   };
 
   let sw = ndcToPlane(transformStartMouse.x, transformStartMouse.y);
