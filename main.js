@@ -43,6 +43,14 @@ let orbitTheta = Math.PI / 3, orbitPhi = Math.PI / 4;
 let orbitRadius = 8;
 let orbitTarget = new THREE.Vector3(0, 0, 0);
 
+// Wireframe display mode
+let wireframeMode = false;
+let xMarkerGroup = null;
+
+// Knife tool state
+let knifeChain = []; // ordered vertex ids created/used by current knife cut
+let knifePreview = null; // THREE.Line preview of cut so far
+
 // Box select
 let boxSelectActive = false;
 let boxStart = new THREE.Vector2();
@@ -249,6 +257,65 @@ class Topology {
     if (out.dot(new THREE.Vector3().subVectors(fc, em)) > 0) out.negate();
     return out;
   }
+
+  // Rebuild a face's edge list and rendered geometry from its current vIds loop
+  rebuildFace(f) {
+    f.eIds = f.vIds.map((_, i) => this.addE(f.vIds[i], f.vIds[(i + 1) % f.vIds.length]).id);
+    f.eIds.forEach(eid => { const e = this.getE(eid); if (e && !e.faceIds.includes(f.id)) e.faceIds.push(f.id); });
+    const ps = f.vIds.map(id => this.getV(id).pos);
+    if (f.mesh.geometry) f.mesh.geometry.dispose();
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(ps.flatMap(p => [p.x, p.y, p.z])), 3));
+    g.setIndex(fanIndex(ps.length));
+    g.computeVertexNormals();
+    f.mesh.geometry = g;
+  }
+
+  // Insert a new vertex at `point` splitting edge `eid`, updating any adjacent faces.
+  splitEdgeAt(eid, point) {
+    const e = this.getE(eid); if (!e) return null;
+    const v1 = e.v1, v2 = e.v2;
+    const adjFaces = [...e.faceIds];
+    const nv = this.addV(point);
+    this.removeE(eid);
+    this.addE(v1, nv.id);
+    this.addE(nv.id, v2);
+    adjFaces.forEach(fid => {
+      const f = this.getF(fid); if (!f) return;
+      let insertAt = -1;
+      for (let i = 0; i < f.vIds.length; i++) {
+        const cur = f.vIds[i], nxt = f.vIds[(i + 1) % f.vIds.length];
+        if ((cur === v1 && nxt === v2) || (cur === v2 && nxt === v1)) { insertAt = i + 1; break; }
+      }
+      if (insertAt >= 0) { f.vIds.splice(insertAt, 0, nv.id); this.rebuildFace(f); }
+    });
+    return nv;
+  }
+
+  // Split a face into two along the segment between two of its boundary verts
+  splitFace(fid, vA, vB) {
+    const f = this.getF(fid); if (!f) return;
+    const i = f.vIds.indexOf(vA), j = f.vIds.indexOf(vB);
+    if (i < 0 || j < 0 || i === j) return;
+    const lo = Math.min(i, j), hi = Math.max(i, j);
+    const loop1 = f.vIds.slice(lo, hi + 1);
+    const loop2 = f.vIds.slice(hi).concat(f.vIds.slice(0, lo + 1));
+    this.removeF(fid);
+    if (loop1.length >= 3) this.addF(loop1);
+    if (loop2.length >= 3) this.addF(loop2);
+  }
+
+  // Find a face whose boundary loop contains both vertex ids
+  faceContaining(vA, vB) {
+    return this.faces.find(f => f.vIds.includes(vA) && f.vIds.includes(vB));
+  }
+}
+
+// Fan triangulation index for an n-gon: [0,1,2, 0,2,3, ...]
+function fanIndex(n) {
+  const idx = [];
+  for (let i = 1; i < n - 1; i++) idx.push(0, i, i + 1);
+  return idx;
 }
 
 let topo;
@@ -287,6 +354,8 @@ function init() {
 
   setupEvents();
   setupRefSystem();
+  setupContextMenu();
+  document.getElementById('wireframe-btn')?.addEventListener('click', toggleWireframe);
   updateHUD();
   console.log('[INIT] Ready. V:', topo.verts.length, 'E:', topo.edges.length, 'F:', topo.faces.length);
 }
@@ -476,27 +545,41 @@ function onKey(e) {
   // Box select
   if (k === 'b') { startBoxSelect(); e.preventDefault(); }
 
+  // Wireframe display toggle
+  if (k === '4') { toggleWireframe(); e.preventDefault(); }
+
   // Transform
   if (k === 'g' && activeTool === 'idle') { startTransform('grab'); e.preventDefault(); }
   if (k === 'r' && activeTool === 'idle') { startTransform('rotate'); e.preventDefault(); }
   if (k === 's' && activeTool === 'idle') { startTransform('scale'); e.preventDefault(); }
 
   // Axis lock during transform
-  if (activeTool !== 'idle' && activeTool !== 'box') {
+  if (activeTool !== 'idle' && activeTool !== 'box' && activeTool !== 'knife') {
     if (k === 'x') { axisLock = 'x'; showAxisLine(); updateHUD(); }
     if (k === 'y') { axisLock = 'y'; showAxisLine(); updateHUD(); }
     if (k === 'z') { axisLock = 'z'; showAxisLine(); updateHUD(); }
   }
 
+  // Knife tool (cut new geometry)
+  if (k === 'k' && activeTool === 'idle') { startKnife(); e.preventDefault(); }
+  if ((e.key === 'Enter' || (k === 'k' && activeTool === 'knife')) && activeTool === 'knife') { finishKnife(); e.preventDefault(); }
+
+  // Subdivide selected edges/faces (add more geometry)
+  if (k === 'w' && activeTool === 'idle') { pushUndo(); subdivideSelected(); e.preventDefault(); }
+
   // Modeling tools
-  if (k === 'e') { pushUndo(); doExtrude(); e.preventDefault(); }
-  if (k === 'f') { pushUndo(); doFill(); e.preventDefault(); }
-  if (k === 'm') { pushUndo(); doMerge(); e.preventDefault(); }
+  if (k === 'e' && !e.ctrlKey && activeTool === 'idle') { pushUndo(); doExtrude(); e.preventDefault(); }
+  if (k === 'f' && activeTool === 'idle') { pushUndo(); doFill(); e.preventDefault(); }
+  if (k === 'm' && activeTool === 'idle') { pushUndo(); doMerge(); e.preventDefault(); }
   if (k === 'x' && activeTool === 'idle') { pushUndo(); doDelete(); e.preventDefault(); }
   if (k === 'z' && e.ctrlKey) { undo(); e.preventDefault(); }
 
   // Cancel
-  if (e.key === 'Escape') { cancelTransform(); e.preventDefault(); }
+  if (e.key === 'Escape') {
+    if (activeTool === 'knife') finishKnife();
+    else cancelTransform();
+    e.preventDefault();
+  }
 
   // Export
   if (k === 'e' && e.ctrlKey) { exportGLB(); e.preventDefault(); }
@@ -513,8 +596,11 @@ function onMouseDown(e) {
   updateMousePosition(e);
 
   if (e.button === 0) { // Left
+    if (activeTool === 'knife') { knifeClick(); return; }
     if (activeTool === 'box') { finishBoxSelect(); return; }
     if (activeTool !== 'idle') { confirmTransform(); return; }
+    // Shift+Left-click on empty space places the 3D cursor (camera orbit pivot)
+    if (e.shiftKey && !getHovered()) { placeCursor3D(); return; }
     // Left-click select
     doSelect(e.shiftKey);
   }
@@ -534,7 +620,9 @@ function onMouseDown(e) {
 
   if (e.button === 2) { // Right
     if (e.shiftKey) { placeCursor3D(); }
+    else if (activeTool === 'knife') { finishKnife(); }
     else if (activeTool !== 'idle') { cancelTransform(); }
+    else { showContextMenu(e.clientX, e.clientY); }
   }
 }
 
@@ -846,6 +934,8 @@ function updateAllColors() {
       }
     });
   });
+  // Keep wireframe X-markers in sync after any topology/selection change
+  if (wireframeMode) updateWireframeMarkers();
 }
 
 // ============================================================================
@@ -882,8 +972,15 @@ function startTransform(tool) {
 
 function updateTransform() {
   const planeNormal = new THREE.Vector3();
-  camera.getWorldDirection(planeNormal);
-  planeNormal.negate();
+  if (activeTool === 'grab' && axisLock !== 'y') {
+    // Default grab slides along the flat horizontal (XZ) ground plane so geometry
+    // stays "flat 2D" against the reference image instead of drifting up/down.
+    // Use axis lock Y (or Z) to deliberately move vertically.
+    planeNormal.set(0, 1, 0);
+  } else {
+    camera.getWorldDirection(planeNormal);
+    planeNormal.negate();
+  }
   const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal, transformCentroid);
 
   const ndcToPlane = (nx, ny) => {
@@ -1045,8 +1142,13 @@ function doExtrude() {
     // Edge extrusion: use edgeOutward (extends in the edge's outward direction)
     normal = topo.edgeOutward(selectedEdges[0].id);
   } else {
-    // Vertex extrusion: use up
-    normal = new THREE.Vector3(0, 1, 0);
+    // Vertex extrusion: extend flat along the ground plane (horizontal), away from
+    // the camera, so it doesn't shoot straight up. Grab (also flat) follows.
+    const camFwd = new THREE.Vector3();
+    camera.getWorldDirection(camFwd);
+    camFwd.y = 0;
+    if (camFwd.lengthSq() < 1e-6) camFwd.set(0, 0, 1);
+    normal = camFwd.normalize();
   }
 
   // Create new vertices offset along the extrusion direction
@@ -1166,12 +1268,19 @@ function placeCursor3D() {
   const targets = [];
   topo.faces.forEach(f => targets.push(f.mesh));
   referenceImages.forEach(ref => targets.push(ref.plane));
-  if (targets.length === 0) return; // nothing to snap to
-  const hits = raycaster.intersectObjects(targets, false);
+  const hits = targets.length > 0 ? raycaster.intersectObjects(targets, false) : [];
   if (hits.length > 0) {
     setCursor3D(hits[0].point.clone());
+    return;
   }
-  // If nothing hit, cursor stays where it was (no floating in air)
+  // Fallback: drop the cursor onto the horizontal ground plane at the current
+  // cursor height. This guarantees the cursor (and camera orbit pivot) can always
+  // be moved — even into empty space when lots of geometry is on screen.
+  const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), -cursor3DPos.y);
+  const hit = new THREE.Vector3();
+  if (raycaster.ray.intersectPlane(ground, hit)) {
+    setCursor3D(hit);
+  }
 }
 
 function setCursor3D(pos) {
@@ -1241,17 +1350,18 @@ function updateHUD() {
 // ============================================================================
 function animate() {
   requestAnimationFrame(animate);
-  // WASD movement
+  // Fly navigation uses ARROW KEYS + PageUp/PageDown so it never conflicts with
+  // tool shortcuts (G/R/S/E/W/A/etc). This keeps the camera still while modeling.
   const delta = clock.getDelta();
   const spd = 5 * delta;
   const fw = new THREE.Vector3(); camera.getWorldDirection(fw); fw.y = 0; fw.normalize();
   const rt = new THREE.Vector3().crossVectors(fw, new THREE.Vector3(0, 1, 0)).normalize();
-  if (keys['w']) { camera.position.addScaledVector(fw, spd); orbitTarget.addScaledVector(fw, spd); updateCameraOrbit(); }
-  if (keys['s']) { camera.position.addScaledVector(fw, -spd); orbitTarget.addScaledVector(fw, -spd); updateCameraOrbit(); }
-  if (keys['a']) { camera.position.addScaledVector(rt, -spd); orbitTarget.addScaledVector(rt, -spd); updateCameraOrbit(); }
-  if (keys['d']) { camera.position.addScaledVector(rt, spd); orbitTarget.addScaledVector(rt, spd); updateCameraOrbit(); }
-  if (keys['q']) { camera.position.y += spd; orbitTarget.y += spd; updateCameraOrbit(); }
-  if (keys['e']) { camera.position.y -= spd; orbitTarget.y -= spd; updateCameraOrbit(); }
+  if (keys['arrowup']) { camera.position.addScaledVector(fw, spd); orbitTarget.addScaledVector(fw, spd); updateCameraOrbit(); }
+  if (keys['arrowdown']) { camera.position.addScaledVector(fw, -spd); orbitTarget.addScaledVector(fw, -spd); updateCameraOrbit(); }
+  if (keys['arrowleft']) { camera.position.addScaledVector(rt, -spd); orbitTarget.addScaledVector(rt, -spd); updateCameraOrbit(); }
+  if (keys['arrowright']) { camera.position.addScaledVector(rt, spd); orbitTarget.addScaledVector(rt, spd); updateCameraOrbit(); }
+  if (keys['pageup']) { camera.position.y += spd; orbitTarget.y += spd; updateCameraOrbit(); }
+  if (keys['pagedown']) { camera.position.y -= spd; orbitTarget.y -= spd; updateCameraOrbit(); }
 
   // Draw box select overlay
   if (activeTool === 'box') {
@@ -1353,6 +1463,237 @@ async function exportGLB() {
     mergedGeo.dispose();
     mergedMesh.material.dispose();
   } catch (e) { console.error(e); alert('Export failed: ' + e.message); }
+}
+
+// ============================================================================
+// WIREFRAME DISPLAY MODE
+// ============================================================================
+function toggleWireframe() {
+  wireframeMode = !wireframeMode;
+  if (wireframeMode) {
+    // Hide solid faces; keep verts + edges visible; show an X marker per face so
+    // you can clearly see points, lines and where each tri/quad is — while the
+    // reference image shows through the transparent (hidden) faces.
+    topo.faces.forEach(f => { f.mesh.visible = false; });
+    buildWireframeMarkers();
+  } else {
+    topo.faces.forEach(f => { f.mesh.visible = true; });
+    clearWireframeMarkers();
+  }
+  const btn = document.getElementById('wireframe-btn');
+  if (btn) { btn.textContent = wireframeMode ? 'Wireframe: ON' : 'Wireframe: OFF'; btn.classList.toggle('active', wireframeMode); }
+  updateHUD();
+}
+
+function clearWireframeMarkers() {
+  if (xMarkerGroup) {
+    scene.remove(xMarkerGroup);
+    xMarkerGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    xMarkerGroup = null;
+  }
+}
+
+function buildWireframeMarkers() {
+  clearWireframeMarkers();
+  xMarkerGroup = new THREE.Group();
+  const mat = new THREE.LineBasicMaterial({ color: 0xff66cc });
+  const s = 0.08;
+  topo.faces.forEach(f => {
+    const c = topo.centroid(f.vIds);
+    const pts = [
+      new THREE.Vector3(c.x - s, c.y, c.z - s), new THREE.Vector3(c.x + s, c.y, c.z + s),
+      new THREE.Vector3(c.x - s, c.y, c.z + s), new THREE.Vector3(c.x + s, c.y, c.z - s),
+    ];
+    const g = new THREE.BufferGeometry().setFromPoints(pts);
+    xMarkerGroup.add(new THREE.LineSegments(g, mat));
+  });
+  scene.add(xMarkerGroup);
+}
+
+// Rebuild markers + keep faces hidden after topology edits while wireframe is on
+function updateWireframeMarkers() {
+  buildWireframeMarkers();
+  topo.faces.forEach(f => { f.mesh.visible = false; });
+}
+
+// ============================================================================
+// SUBDIVIDE (add more geometry)
+// ============================================================================
+function subdivideSelected() {
+  // Prefer subdividing fully-selected faces into quads; otherwise split selected edges.
+  const fullFaces = topo.faces.filter(f => f.vIds.length >= 3 && f.vIds.every(v => selectedIds.has(v)));
+  if (fullFaces.length > 0) {
+    const newSel = new Set();
+    fullFaces.map(f => f.id).forEach(fid => {
+      subdivideFace(fid).forEach(id => newSel.add(id));
+    });
+    selectedIds = newSel;
+    updateAllColors();
+    updateHUD();
+    return;
+  }
+  // Edge subdivision: split each selected edge at its midpoint
+  const selEdges = topo.edges.filter(e => selectedIds.has(e.v1) && selectedIds.has(e.v2)).map(e => e.id);
+  if (selEdges.length === 0) return;
+  const added = [];
+  selEdges.forEach(eid => {
+    const e = topo.getE(eid); if (!e) return;
+    const a = topo.getV(e.v1), b = topo.getV(e.v2);
+    const mid = new THREE.Vector3().addVectors(a.pos, b.pos).multiplyScalar(0.5);
+    const nv = topo.splitEdgeAt(eid, mid);
+    if (nv) added.push(nv.id);
+  });
+  added.forEach(id => selectedIds.add(id));
+  updateAllColors();
+  updateHUD();
+}
+
+// Subdivide one face into 4 by inserting edge midpoints + a center vertex.
+function subdivideFace(fid) {
+  const f = topo.getF(fid);
+  if (!f) return [];
+  const loop = [...f.vIds];
+  const center = topo.centroid(loop);
+  const mids = [];
+  for (let i = 0; i < loop.length; i++) {
+    const a = topo.getV(loop[i]).pos, b = topo.getV(loop[(i + 1) % loop.length]).pos;
+    mids.push(new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5));
+  }
+  const cv = topo.addV(center).id;
+  const midIds = mids.map(p => topo.addV(p).id);
+  // Build the new sub-faces FIRST so corner verts never get orphaned/cleaned.
+  for (let i = 0; i < loop.length; i++) {
+    const corner = loop[i];
+    const mPrev = midIds[(i - 1 + loop.length) % loop.length];
+    const mNext = midIds[i];
+    topo.addF([mPrev, corner, mNext, cv]);
+  }
+  topo.removeF(fid);
+  return [cv, ...midIds];
+}
+
+// ============================================================================
+// KNIFE TOOL (cut edges/faces, adding new geometry)
+// ============================================================================
+function startKnife() {
+  pushUndo();
+  activeTool = 'knife';
+  knifeChain = [];
+  clearKnifePreview();
+  updateHUD();
+}
+
+function finishKnife() {
+  activeTool = 'idle';
+  knifeChain = [];
+  clearKnifePreview();
+  updateAllColors();
+  updateHUD();
+}
+
+function clearKnifePreview() {
+  if (knifePreview) {
+    scene.remove(knifePreview);
+    if (knifePreview.geometry) knifePreview.geometry.dispose();
+    if (knifePreview.material) knifePreview.material.dispose();
+    knifePreview = null;
+  }
+}
+
+function knifeClick() {
+  raycaster.setFromCamera(mouse, camera);
+  // Find the edge closest to the cursor ray and the closest point on it.
+  let bestEid = null, bestD = Infinity, bestPt = null;
+  topo.edges.forEach(e => {
+    const a = topo.getV(e.v1).pos, b = topo.getV(e.v2).pos;
+    const d = distRaySeg(raycaster.ray.origin, raycaster.ray.direction, a, b);
+    if (d < bestD) {
+      bestD = d;
+      bestEid = e.id;
+      bestPt = closestPtOnSegToRay(raycaster.ray.origin, raycaster.ray.direction, a, b);
+    }
+  });
+  if (bestEid === null || bestD > 0.4) return;
+
+  const nv = topo.splitEdgeAt(bestEid, bestPt);
+  if (!nv) return;
+
+  // Connect to the previous cut point: split a shared face, or add a loose edge.
+  if (knifeChain.length > 0) {
+    const prev = knifeChain[knifeChain.length - 1];
+    const face = topo.faceContaining(prev, nv.id);
+    if (face) topo.splitFace(face.id, prev, nv.id);
+    else topo.addE(prev, nv.id);
+  }
+  knifeChain.push(nv.id);
+  drawKnifePreview();
+  updateAllColors();
+}
+
+function drawKnifePreview() {
+  clearKnifePreview();
+  const pts = knifeChain.map(id => { const v = topo.getV(id); return v ? v.pos.clone() : null; }).filter(Boolean);
+  if (pts.length < 2) return;
+  const g = new THREE.BufferGeometry().setFromPoints(pts);
+  knifePreview = new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0x00ffaa }));
+  scene.add(knifePreview);
+}
+
+// Closest point on segment AB to a ray (origin ro, dir rd), clamped to the segment.
+function closestPtOnSegToRay(ro, rd, a, b) {
+  const s = new THREE.Vector3().subVectors(b, a);
+  const rxs = new THREE.Vector3().crossVectors(rd, s);
+  const m = rxs.length();
+  let u = 0;
+  if (m >= 1e-8) {
+    const qp = new THREE.Vector3().subVectors(a, ro);
+    u = new THREE.Vector3().crossVectors(qp, rd).dot(rxs) / (m * m);
+  }
+  u = Math.max(0, Math.min(1, u));
+  return new THREE.Vector3().copy(a).addScaledVector(s, u);
+}
+
+// ============================================================================
+// CONTEXT MENU (right-click)
+// ============================================================================
+function setupContextMenu() {
+  const menu = document.getElementById('context-menu');
+  if (!menu) return;
+  menu.addEventListener('mousedown', (ev) => ev.stopPropagation());
+  menu.querySelectorAll('[data-action]').forEach(item => {
+    item.addEventListener('click', () => {
+      const action = item.getAttribute('data-action');
+      hideContextMenu();
+      runContextAction(action);
+    });
+  });
+  // Any non-right-click anywhere closes the menu.
+  window.addEventListener('mousedown', (ev) => { if (ev.button !== 2) hideContextMenu(); });
+}
+
+function showContextMenu(x, y) {
+  const menu = document.getElementById('context-menu');
+  if (!menu) return;
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  menu.style.display = 'block';
+}
+
+function hideContextMenu() {
+  const menu = document.getElementById('context-menu');
+  if (menu) menu.style.display = 'none';
+}
+
+function runContextAction(action) {
+  switch (action) {
+    case 'subdivide': pushUndo(); subdivideSelected(); break;
+    case 'knife': startKnife(); break;
+    case 'wireframe': toggleWireframe(); break;
+    case 'extrude': pushUndo(); doExtrude(); break;
+    case 'fill': pushUndo(); doFill(); break;
+    case 'merge': pushUndo(); doMerge(); break;
+    case 'delete': pushUndo(); doDelete(); break;
+  }
 }
 
 // ============================================================================

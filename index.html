@@ -10,6 +10,19 @@
     <div id="canvas-container"></div>
     <div id="box-select-overlay"></div>
 
+    <!-- Right-click context menu -->
+    <div id="context-menu">
+      <div class="ctx-item" data-action="subdivide">Subdivide <span>W</span></div>
+      <div class="ctx-item" data-action="knife">Knife Cut <span>K</span></div>
+      <div class="ctx-item" data-action="extrude">Extrude <span>E</span></div>
+      <div class="ctx-item" data-action="fill">Fill <span>F</span></div>
+      <div class="ctx-item" data-action="merge">Merge <span>M</span></div>
+      <div class="ctx-item" data-action="delete">Delete <span>X</span></div>
+      <div class="ctx-sep"></div>
+      <div class="ctx-item" data-action="wireframe">Toggle Wireframe <span>4</span></div>
+    </div>
+
+    <!-- HUD: status panel (top-left) -->
     <div id="hud">
       <div class="hud-row">
         <span class="hud-label">Mode:</span>
@@ -24,15 +37,9 @@
         <span class="hud-label">Selected:</span>
         <span id="selected-indicator">None</span>
       </div>
-      <div class="hud-help">
-        <p><b>1/2/3</b> Vert/Edge/Face | <b>A</b> Select All | <b>B</b> Box Select</p>
-        <p><b>G</b> Grab | <b>R</b> Rotate | <b>S</b> Scale | <b>X/Y/Z</b> Axis Lock</p>
-        <p><b>E</b> Extrude | <b>F</b> Fill | <b>M</b> Merge | <b>X</b> Delete</p>
-        <p><b>Shift+RClick</b> 3D Cursor | <b>Mid-Drag</b> Orbit | <b>Shift+Mid</b> Pan</p>
-        <p><b>Scroll</b> Zoom | <b>LClick</b> Select | <b>Esc</b> Cancel</p>
-      </div>
-      <button id="export-btn" title="Ctrl+E">Export .glb</button>
+      <button id="export-btn" title="Ctrl+E">Export .glb (solid faces)</button>
       <button id="import-ref-btn" title="Import a reference image (.png, .jpg) as a 4-point plane">Import Ref Image</button>
+      <button id="wireframe-btn" title="Toggle wireframe display (key: 4)">Wireframe: OFF</button>
       <input type="file" id="ref-image-input" accept=".png,.jpg,.jpeg" style="display:none" />
       <div class="hud-slider-row">
         <span class="hud-label">Mesh:</span>
@@ -44,6 +51,55 @@
         <input type="range" id="image-opacity-slider" min="0" max="100" value="100" />
         <span id="image-opacity-val" class="slider-val">100%</span>
       </div>
+    </div>
+
+    <!-- Controls reference: every keyboard shortcut / non-GUI control (top-right) -->
+    <div id="controls-panel">
+      <div class="cp-title">CONTROLS — KEYBOARD &amp; MOUSE</div>
+      <div class="cp-note">Everything below is keyboard/mouse only (no GUI button).</div>
+
+      <div class="cp-group">Selection Mode</div>
+      <div class="cp-line"><b>1</b> Vertex select mode</div>
+      <div class="cp-line"><b>2</b> Edge select mode</div>
+      <div class="cp-line"><b>3</b> Face select mode</div>
+
+      <div class="cp-group">Display</div>
+      <div class="cp-line"><b>4</b> Toggle Wireframe (points/lines/X, see-through)</div>
+
+      <div class="cp-group">Select</div>
+      <div class="cp-line"><b>Left Click</b> Select element</div>
+      <div class="cp-line"><b>Shift + Left Click</b> Add/remove from selection</div>
+      <div class="cp-line"><b>A</b> Select all</div>
+      <div class="cp-line"><b>B</b> Box select (drag, click to finish)</div>
+
+      <div class="cp-group">Transform (flat by default)</div>
+      <div class="cp-line"><b>G</b> Grab / Move (slides flat on ground)</div>
+      <div class="cp-line"><b>R</b> Rotate</div>
+      <div class="cp-line"><b>S</b> Scale</div>
+      <div class="cp-line"><b>X / Y / Z</b> Lock to axis (Y or Z = move vertically)</div>
+      <div class="cp-line"><b>Left Click</b> Confirm &nbsp; <b>Right Click / Esc</b> Cancel</div>
+
+      <div class="cp-group">Modeling</div>
+      <div class="cp-line"><b>E</b> Extrude (stays flat, then auto-grab)</div>
+      <div class="cp-line"><b>W</b> Subdivide selected edges/faces</div>
+      <div class="cp-line"><b>K</b> Knife: click edges to cut, <b>Enter/Esc</b> finish</div>
+      <div class="cp-line"><b>F</b> Fill (edge / face)</div>
+      <div class="cp-line"><b>M</b> Merge selected verts</div>
+      <div class="cp-line"><b>X</b> Delete selected</div>
+      <div class="cp-line"><b>Ctrl + Z</b> Undo</div>
+      <div class="cp-line"><b>Right Click</b> Context menu (Subdivide/Knife/etc)</div>
+
+      <div class="cp-group">Camera &amp; 3D Cursor</div>
+      <div class="cp-line"><b>Middle Drag</b> Orbit around 3D cursor</div>
+      <div class="cp-line"><b>Scroll</b> Zoom in / out</div>
+      <div class="cp-line"><b>Shift + Right Click</b> Place 3D cursor (orbit pivot)</div>
+      <div class="cp-line"><b>Shift + Left Click</b> (empty space) Place 3D cursor</div>
+      <div class="cp-line"><b>Shift + Middle Drag</b> Slide 3D cursor along surfaces</div>
+      <div class="cp-line"><b>Arrow Keys</b> Fly forward/back/strafe</div>
+      <div class="cp-line"><b>PageUp / PageDown</b> Fly up / down</div>
+
+      <div class="cp-group">Export</div>
+      <div class="cp-line"><b>Ctrl + E</b> Export .glb (always solid faces)</div>
     </div>
 
     <script type="module" src="/main.js"></script>

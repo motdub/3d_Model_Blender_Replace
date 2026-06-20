@@ -186,3 +186,116 @@ body, html {
   pointer-events: none;
   display: none;
 }
+
+/* Wireframe toggle button */
+#wireframe-btn {
+  display: block;
+  margin-top: 8px;
+  padding: 8px 16px;
+  width: 100%;
+  background: #8e44ad;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.15s;
+}
+#wireframe-btn:hover { background: #7d3c98; }
+#wireframe-btn.active { background: #d35400; }
+
+/* Controls reference panel (top-right) */
+#controls-panel {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 10;
+  background: rgba(10, 10, 30, 0.85);
+  color: #d8d8e0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+  font-size: 11px;
+  line-height: 1.5;
+  width: 320px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  pointer-events: none;
+  user-select: none;
+}
+.cp-title {
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: #fff;
+  margin-bottom: 2px;
+}
+.cp-note {
+  font-size: 10px;
+  color: #8a8aa0;
+  margin-bottom: 8px;
+}
+.cp-group {
+  margin-top: 8px;
+  margin-bottom: 2px;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #f1c40f;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  padding-top: 6px;
+}
+.cp-line { color: #c2c2d0; padding: 1px 0; }
+.cp-line b {
+  display: inline-block;
+  min-width: 18px;
+  color: #fff;
+  background: rgba(255,255,255,0.10);
+  border-radius: 3px;
+  padding: 0 5px;
+  margin-right: 4px;
+  font-family: monospace;
+  font-weight: 700;
+}
+
+/* Right-click context menu */
+#context-menu {
+  position: absolute;
+  z-index: 50;
+  display: none;
+  min-width: 180px;
+  background: rgba(20, 20, 40, 0.97);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  user-select: none;
+}
+.ctx-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 7px 10px;
+  border-radius: 5px;
+  color: #e0e0e8;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ctx-item:hover { background: #3a6ea5; color: #fff; }
+.ctx-item span {
+  font-family: monospace;
+  font-size: 11px;
+  color: #9a9ab0;
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+.ctx-item:hover span { color: #fff; }
+.ctx-sep {
+  height: 1px;
+  background: rgba(255,255,255,0.12);
+  margin: 4px 6px;
+}
